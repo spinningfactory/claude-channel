@@ -1,4 +1,6 @@
 mod config;
+#[cfg(feature = "redis")]
+mod coordination;
 mod mcp;
 mod sources;
 
@@ -19,14 +21,57 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("[channel] Sources: {}", config.sources.len());
 
     let server_name = config.server_name.clone();
+    let (tx, mut rx) = mpsc::channel::<sources::Event>(256);
+
+    // Set up coordination if configured
+    #[cfg(feature = "redis")]
+    let coordinator = if let Some(ref coord_config) = config.coordination {
+        eprintln!("[channel] Coordination enabled: {}", coord_config.goal);
+        let coordinator = coordination::Coordinator::new(
+            server_name.clone(),
+            coord_config.goal.clone(),
+            coord_config.url.clone(),
+        )?;
+        coordinator.register().await?;
+
+        // Spawn coordination subscriber
+        let coord_tx = tx.clone();
+        let coord_sub = coordination::Coordinator::new(
+            server_name.clone(),
+            coord_config.goal.clone(),
+            coord_config.url.clone(),
+        )?;
+        tokio::spawn(async move {
+            if let Err(e) = coord_sub.subscribe(coord_tx).await {
+                eprintln!("[coord] Fatal: {}", e);
+            }
+        });
+
+        Some(coordinator)
+    } else {
+        None
+    };
+
+    #[cfg(feature = "redis")]
+    let publisher = coordinator
+        .as_ref()
+        .and_then(|c| c.publisher().ok());
+
     let instructions = config.instructions.clone().unwrap_or_else(|| {
+        #[cfg(feature = "redis")]
+        if config.coordination.is_some() {
+            return format!(
+                "You are session \"{}\". Messages from other Claude sessions arrive as channel notifications. \
+                 Use the publish tool to send messages and list_sessions to see who's online. \
+                 ONLY respond to messages directly relevant to your work.",
+                server_name
+            );
+        }
         format!(
             "Events from external sources arrive as <channel source=\"{}\" ...>.",
             server_name
         )
     });
-
-    let (tx, mut rx) = mpsc::channel::<sources::Event>(256);
 
     // Spawn each configured source
     for source_config in config.sources {
@@ -130,6 +175,14 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("[channel] All sources closed");
     });
 
+    // Build MCP context
+    let ctx = mcp::McpContext {
+        server_name: server_name.clone(),
+        instructions,
+        #[cfg(feature = "redis")]
+        publisher,
+    };
+
     // MCP stdin loop (on a blocking thread so tokio tasks can still run)
     let handle = tokio::task::spawn_blocking(move || {
         let stdin = io::stdin();
@@ -146,7 +199,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             match serde_json::from_str::<mcp::JsonRpcRequest>(&line) {
-                Ok(req) => mcp::handle_request(req, &server_name, &instructions),
+                Ok(req) => ctx.handle_request(req),
                 Err(e) => {
                     eprintln!("[channel] Bad JSON-RPC: {} — {}", e, line);
                 }
@@ -157,5 +210,12 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let _ = handle.await;
+
+    // Deregister on shutdown
+    #[cfg(feature = "redis")]
+    if let Some(ref coord) = coordinator {
+        let _ = coord.deregister().await;
+    }
+
     Ok(())
 }

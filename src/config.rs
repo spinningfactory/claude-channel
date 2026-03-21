@@ -23,7 +23,17 @@ pub struct Config {
     #[serde(default = "default_server_name")]
     pub server_name: String,
     pub instructions: Option<String>,
+    #[serde(default)]
     pub sources: Vec<SourceConfig>,
+    #[cfg(feature = "redis")]
+    pub coordination: Option<CoordinationConfig>,
+}
+
+#[cfg(feature = "redis")]
+#[derive(Debug, Deserialize)]
+pub struct CoordinationConfig {
+    pub url: String,
+    pub goal: String,
 }
 
 #[derive(Debug, Deserialize)]
