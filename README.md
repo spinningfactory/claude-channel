@@ -116,7 +116,7 @@ mise run clean      # Stop infrastructure + cargo clean
 mise run session -- <name> <goal> [project-dir]
 mise run sessions    # List active sessions
 mise run test-multi  # Launch 3 test sessions in tmux
-mise run dashboard   # Web dashboard at http://localhost:8900
+mise run dashboard   # Web dashboard at http://localhost:8900 (4 visualization modes)
 ```
 
 ### Multi-session coordination
@@ -162,8 +162,8 @@ src/
   config.rs           YAML config structs
   mcp.rs              MCP JSON-RPC protocol (tools when coordination active)
   coordination.rs     Session registry, pub/sub, publish/list tools
-  dashboard.rs        Web dashboard binary (SSE + embedded HTML)
-  dashboard.html      Dashboard frontend (D3.js graph + chat timeline)
+  dashboard.rs        Web dashboard binary (SSE + Redis Streams replay)
+  dashboard.html      Dashboard frontend (4 visualization modes + D3.js)
   sources/
     mod.rs             Event struct + EventSource trait
     webhook.rs         HTTP POST listener
@@ -192,3 +192,16 @@ Each configured source runs as an independent tokio task. All sources send `Even
 
 stdin (MCP JSON-RPC) ──> [handler] ──> stdout (responses)
 ```
+
+### Dashboard
+
+The web dashboard (`mise run dashboard`) provides real-time visualization of multi-session communication with 4 switchable views:
+
+| View | Description |
+|------|-------------|
+| Swim Lane | Vertical lanes per session, arrows show message flow |
+| Git Graph | Branch-style lines with merge arcs for DMs |
+| Threaded | Slack-style with collapsible DM threads |
+| Gantt | Horizontal timeline with session swim lanes |
+
+Events are persisted via Redis Streams (`claude:stream`) so the dashboard replays full history on page load. Tab selection persists across refreshes.
