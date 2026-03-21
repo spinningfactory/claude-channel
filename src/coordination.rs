@@ -49,6 +49,14 @@ impl Coordinator {
             .query_async::<()>(&mut con)
             .await?;
 
+        // Persist to stream
+        redis::cmd("XADD")
+            .arg("claude:stream").arg("MAXLEN").arg("~").arg("10000").arg("*")
+            .arg("channel").arg("claude:lobby")
+            .arg("payload").arg(announce.to_string())
+            .query_async::<String>(&mut con)
+            .await?;
+
         eprintln!("[coord] Registered as '{}': {}", self.session_name, self.goal);
         Ok(())
     }
@@ -72,6 +80,14 @@ impl Coordinator {
             .arg("claude:lobby")
             .arg(announce.to_string())
             .query_async::<()>(&mut con)
+            .await?;
+
+        // Persist to stream
+        redis::cmd("XADD")
+            .arg("claude:stream").arg("MAXLEN").arg("~").arg("10000").arg("*")
+            .arg("channel").arg("claude:lobby")
+            .arg("payload").arg(announce.to_string())
+            .query_async::<String>(&mut con)
             .await?;
 
         eprintln!("[coord] Deregistered '{}'", self.session_name);
@@ -139,6 +155,14 @@ impl Publisher {
             .arg(channel)
             .arg(message)
             .query::<()>(&mut con)?;
+
+        // Persist to stream
+        redis::cmd("XADD")
+            .arg("claude:stream").arg("MAXLEN").arg("~").arg("10000").arg("*")
+            .arg("channel").arg(channel)
+            .arg("payload").arg(message)
+            .query::<String>(&mut con)?;
+
         eprintln!("[coord] Published to {}: {}", channel, message);
         Ok(())
     }

@@ -81,6 +81,18 @@ async fn main() -> anyhow::Result<()> {
                     let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: keep-alive\r\n\r\n";
                     if stream.write_all(headers.as_bytes()).await.is_err() { return; }
 
+                    // Replay history from Redis stream
+                    let redis_url = std::env::var("REDIS_URL")
+                        .unwrap_or_else(|_| "redis://localhost:16379".to_string());
+                    if let Ok(history) = replay_history(&redis_url).await {
+                        for event in history {
+                            let data = serde_json::to_string(&event).unwrap_or_default();
+                            let msg = format!("data: {}\n\n", data);
+                            if stream.write_all(msg.as_bytes()).await.is_err() { return; }
+                        }
+                    }
+
+                    // Then stream live events
                     let mut rx = tx.subscribe();
                     while let Ok(event) = rx.recv().await {
                         let data = serde_json::to_string(&event).unwrap_or_default();
@@ -162,6 +174,97 @@ fn get_sessions(url: &str) -> anyhow::Result<Vec<(String, serde_json::Value)>> {
         .collect();
 
     Ok(sessions)
+}
+
+async fn replay_history(url: &str) -> anyhow::Result<Vec<Event>> {
+    let client = redis::Client::open(url)?;
+    let mut con = client.get_multiplexed_async_connection().await?;
+
+    // XRANGE claude:stream - + returns all entries
+    let result: Vec<redis::Value> = redis::cmd("XRANGE")
+        .arg("claude:stream")
+        .arg("-")
+        .arg("+")
+        .query_async(&mut con)
+        .await?;
+
+    let mut events = Vec::new();
+
+    for entry in result {
+        if let redis::Value::Array(ref fields) = entry {
+            if fields.len() < 2 { continue; }
+
+            // Extract stream ID (contains timestamp)
+            let stream_id = match &fields[0] {
+                redis::Value::BulkString(b) => String::from_utf8_lossy(b).to_string(),
+                _ => continue,
+            };
+
+            // Extract field pairs
+            let mut channel = String::new();
+            let mut payload = String::new();
+
+            if let redis::Value::Array(ref pairs) = fields[1] {
+                let mut i = 0;
+                while i + 1 < pairs.len() {
+                    let key = match &pairs[i] {
+                        redis::Value::BulkString(b) => String::from_utf8_lossy(b).to_string(),
+                        _ => { i += 2; continue; }
+                    };
+                    let val = match &pairs[i + 1] {
+                        redis::Value::BulkString(b) => String::from_utf8_lossy(b).to_string(),
+                        _ => { i += 2; continue; }
+                    };
+                    match key.as_str() {
+                        "channel" => channel = val,
+                        "payload" => payload = val,
+                        _ => {}
+                    }
+                    i += 2;
+                }
+            }
+
+            if channel.is_empty() || payload.is_empty() { continue; }
+
+            // Convert stream ID timestamp (milliseconds before the dash)
+            let ts_millis: u64 = stream_id.split('-').next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let timestamp = chrono::DateTime::from_timestamp_millis(ts_millis as i64)
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+
+            // Parse payload same as live events
+            let (from, body, event_type) = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&payload) {
+                let from = v.get("from").or(v.get("session"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let body = v.get("body").or(v.get("goal")).or(v.get("message"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&payload)
+                    .to_string();
+                let event_type = v.get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("message")
+                    .to_string();
+                (from, body, event_type)
+            } else {
+                ("unknown".to_string(), payload.clone(), "message".to_string())
+            };
+
+            events.push(Event {
+                timestamp,
+                channel,
+                from,
+                body,
+                event_type,
+            });
+        }
+    }
+
+    eprintln!("[dashboard] Replayed {} events from stream", events.len());
+    Ok(events)
 }
 
 use tokio::io::AsyncReadExt;
