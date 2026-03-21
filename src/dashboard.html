@@ -9,7 +9,7 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; }
 
-  .container { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto 1fr; height: 100vh; gap: 1px; background: #21262d; }
+  .container { display: flex; flex-direction: column; height: 100vh; background: #21262d; }
   .header { grid-column: 1 / -1; padding: 12px 20px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 16px; }
   .header h1 { font-size: 16px; font-weight: 600; color: #f0f6fc; }
   .header .status { font-size: 13px; color: #8b949e; }
@@ -140,8 +140,30 @@
 
   .chat-msg .room-badge { background: #21262d; color: #8b949e; font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-left: 4px; }
 
+  /* Minimized bar */
+  .minimized-bar { display: flex; gap: 1px; background: #21262d; flex-shrink: 0; }
+  .minimized-bar:empty { display: none; }
+  .minimized-tab { padding: 6px 14px; background: #161b22; color: #8b949e; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer; display: flex; align-items: center; gap: 6px; border-bottom: 1px solid #30363d; }
+  .minimized-tab:hover { color: #f0f6fc; background: #1c2129; }
+  .minimized-tab .restore-btn { color: #58a6ff; font-size: 14px; }
+
+  /* Panel grid — fills remaining space */
+  .panel-grid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; flex: 1; gap: 1px; background: #21262d; overflow: hidden; }
+  /* Adaptive grid based on visible panel count */
+  .panel-grid.panels-1 { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+  .panel-grid.panels-2 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; }
+  .panel-grid.panels-3 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+  .panel-grid.panels-3 > .panel:first-child { grid-column: 1 / -1; }
+
+  /* Panel controls */
+  .panel-controls { margin-left: auto; display: flex; gap: 4px; }
+  .panel-btn { background: none; border: 1px solid #30363d; color: #8b949e; border-radius: 3px; width: 22px; height: 22px; cursor: pointer; font-size: 12px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+  .panel-btn:hover { color: #f0f6fc; border-color: #58a6ff; }
+  .panel.maximized { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 100; }
+
   @media (max-width: 900px) {
-    .container { grid-template-columns: 1fr; }
+    .panel-grid { grid-template-columns: 1fr; }
+    .panel-grid.panels-3 > .panel:first-child { grid-column: 1; }
   }
 </style>
 </head>
@@ -162,18 +184,20 @@
     <span class="room-count" id="room-count"></span>
   </div>
 
+  <div class="minimized-bar" id="minimized-bar"></div>
+  <div class="panel-grid" id="panel-grid">
   <div class="panel" id="graph-panel">
-    <div class="panel-header">Session Graph</div>
+    <div class="panel-header"><span>Session Graph</span><div class="panel-controls"><button class="panel-btn" onclick="toggleMin('graph-panel')" title="Minimize">_</button><button class="panel-btn" onclick="toggleMax('graph-panel')" title="Maximize">&#9633;</button></div></div>
     <svg id="graph"></svg>
   </div>
 
   <div class="panel" id="chat-panel">
-    <div class="panel-header">Message Feed</div>
+    <div class="panel-header"><span>Message Feed</span><div class="panel-controls"><button class="panel-btn" onclick="toggleMin('chat-panel')" title="Minimize">_</button><button class="panel-btn" onclick="toggleMax('chat-panel')" title="Maximize">&#9633;</button></div></div>
     <div id="chat-messages"></div>
   </div>
 
   <div class="panel" id="sessions-panel">
-    <div class="panel-header">Active Sessions</div>
+    <div class="panel-header"><span>Active Sessions</span><div class="panel-controls"><button class="panel-btn" onclick="toggleMin('sessions-panel')" title="Minimize">_</button><button class="panel-btn" onclick="toggleMax('sessions-panel')" title="Maximize">&#9633;</button></div></div>
     <div id="sessions-list"></div>
   </div>
 
@@ -186,6 +210,7 @@
         <button class="tab-btn" data-view="threaded">Threaded</button>
         <button class="tab-btn" data-view="gantt">Gantt</button>
       </div>
+      <div class="panel-controls"><button class="panel-btn" onclick="toggleMin('sequence-panel')" title="Minimize">_</button><button class="panel-btn" onclick="toggleMax('sequence-panel')" title="Maximize">&#9633;</button></div>
     </div>
 
     <!-- Swim Lane container -->
@@ -223,6 +248,7 @@
         <div class="gantt-tooltip" id="gantt-tooltip"></div>
       </div>
     </div>
+  </div>
   </div>
 </div>
 
@@ -429,6 +455,7 @@ function renderSessions() {
 function renderChat() {
   var el = document.getElementById('chat-messages');
   var last50 = messages.slice(-50);
+  last50.sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
   el.innerHTML = '';
   last50.forEach(function(msg) {
     var div = document.createElement('div');
@@ -491,7 +518,7 @@ function renderSwimLane() {
   }
 
   var laneWidth = 140;
-  var laneMargin = 60;
+  var laneMargin = 100;
   var headerY = 25;
   var startY = 50;
   var rowHeight = 40;
@@ -499,6 +526,7 @@ function renderSwimLane() {
   var filteredMsgs = messages.filter(function(m) {
     return m.event_type === 'message' || m.event_type === 'join' || m.event_type === 'leave';
   }).slice(-40);
+  filteredMsgs.sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
 
   var totalWidth = Math.max(laneMargin + seqSessions.length * laneWidth, 300);
   var totalHeight = startY + filteredMsgs.length * rowHeight + 40;
@@ -640,7 +668,7 @@ function renderSwimLane() {
 // GIT GRAPH RENDERER
 // =============================================
 var GG_COLORS = ['#58a6ff', '#f0883e', '#3fb950', '#bc8cff', '#f778ba', '#79c0ff', '#d2a8ff'];
-var GG = { colW: 100, rowH: 44, leftPad: 60, topPad: 36, nodeR: 6, joinR: 8 };
+var GG = { colW: 100, rowH: 44, leftPad: 100, topPad: 36, nodeR: 6, joinR: 8 };
 var ggColumns = [];
 var ggDeadSessions = new Set();
 
@@ -660,6 +688,11 @@ function renderGitGraph() {
   var events = messages.filter(function(m) {
     return m.event_type === 'message' || m.event_type === 'join' || m.event_type === 'leave';
   }).slice(-60);
+
+  // Sort by timestamp to ensure correct ordering
+  events.sort(function(a, b) {
+    return new Date(a.timestamp) - new Date(b.timestamp);
+  });
 
   if (events.length === 0) return;
 
@@ -724,17 +757,36 @@ function renderGitGraph() {
     if (ev.event_type === 'leave') alive.delete(name);
   });
 
+  // Draw line segments only while session is alive (stop at leave, resume at rejoin)
   ggColumns.forEach(function(name) {
-    if (!(name in sessionFirstRow)) return;
     var x = ggX(name);
-    var y1 = GG.topPad + sessionFirstRow[name] * GG.rowH;
-    var y2 = GG.topPad + sessionLastRow[name] * GG.rowH;
-    var isDead = ggDeadSessions.has(name);
-    lineLayer.append('line')
-      .attr('class', 'gg-line' + (isDead ? ' gg-line-dead' : ''))
-      .attr('x1', x).attr('x2', x)
-      .attr('y1', y1).attr('y2', y2)
-      .attr('stroke', ggColor(name));
+    var segStart = null;
+    events.forEach(function(ev, ri) {
+      if (ev.from === name && ev.event_type === 'join') {
+        segStart = ri;
+      } else if (ev.from === name && ev.event_type === 'leave') {
+        if (segStart !== null) {
+          var y1 = GG.topPad + segStart * GG.rowH;
+          var y2 = GG.topPad + ri * GG.rowH;
+          lineLayer.append('line')
+            .attr('class', 'gg-line')
+            .attr('x1', x).attr('x2', x)
+            .attr('y1', y1).attr('y2', y2)
+            .attr('stroke', ggColor(name));
+        }
+        segStart = null;
+      }
+    });
+    // If still alive (no leave after last join), draw to last event
+    if (segStart !== null && name in sessionLastRow) {
+      var y1 = GG.topPad + segStart * GG.rowH;
+      var y2 = GG.topPad + sessionLastRow[name] * GG.rowH;
+      lineLayer.append('line')
+        .attr('class', 'gg-line')
+        .attr('x1', x).attr('x2', x)
+        .attr('y1', y1).attr('y2', y2)
+        .attr('stroke', ggColor(name));
+    }
   });
 
   events.forEach(function(ev, ri) {
@@ -886,6 +938,7 @@ function renderThreaded() {
   var events = messages.filter(function(m) {
     return m.event_type === 'message' || m.event_type === 'join' || m.event_type === 'leave';
   }).slice(-80);
+  events.sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
 
   if (events.length === 0) { view.innerHTML = ''; return; }
 
@@ -1075,6 +1128,7 @@ function renderGantt() {
   var relevant = messages.filter(function(m) {
     return m.event_type === 'message' || m.event_type === 'join' || m.event_type === 'leave';
   });
+  relevant.sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
   if (relevant.length === 0) return;
 
   relevant.forEach(function(m) {
@@ -1373,6 +1427,67 @@ function drag(sim) {
     .on('drag', function(e, d) { d.fx = e.x; d.fy = e.y; })
     .on('end', function(e, d) { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; });
 }
+
+var panelNames = {
+  'graph-panel': 'Session Graph',
+  'chat-panel': 'Message Feed',
+  'sessions-panel': 'Active Sessions',
+  'sequence-panel': 'Timeline'
+};
+
+function toggleMin(panelId) {
+  var panel = document.getElementById(panelId);
+  var bar = document.getElementById('minimized-bar');
+  var grid = document.getElementById('panel-grid');
+
+  if (panel.style.display === 'none') {
+    // Restore
+    restorePanel(panelId);
+  } else {
+    // Minimize — hide panel, add tab to bar
+    panel.style.display = 'none';
+    var tab = document.createElement('div');
+    tab.className = 'minimized-tab';
+    tab.id = 'min-tab-' + panelId;
+    tab.innerHTML = '<span>' + (panelNames[panelId] || panelId) + '</span><span class="restore-btn">+</span>';
+    tab.onclick = function() { restorePanel(panelId); };
+    bar.appendChild(tab);
+    updateGridLayout();
+  }
+}
+
+function restorePanel(panelId) {
+  var panel = document.getElementById(panelId);
+  var bar = document.getElementById('minimized-bar');
+  var tab = document.getElementById('min-tab-' + panelId);
+  if (tab) bar.removeChild(tab);
+  panel.style.display = '';
+  panel.classList.remove('maximized');
+  updateGridLayout();
+  setTimeout(function() { renderSequence(); updateGraph(); }, 50);
+}
+
+function updateGridLayout() {
+  var grid = document.getElementById('panel-grid');
+  var visible = grid.querySelectorAll('.panel:not([style*="display: none"])');
+  grid.className = 'panel-grid panels-' + visible.length;
+}
+
+function toggleMax(panelId) {
+  var panel = document.getElementById(panelId);
+  var isMax = panel.classList.toggle('maximized');
+  if (isMax) {
+    setTimeout(function() { renderSequence(); updateGraph(); }, 50);
+  }
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.panel.maximized').forEach(function(p) {
+      p.classList.remove('maximized');
+    });
+  }
+});
 
 function esc(s) {
   var d = document.createElement('div');

@@ -6,6 +6,7 @@ R="redis-cli -p $REDIS_PORT"
 
 # Sequence counter for sub-millisecond ordering
 SEQ=0
+GLOBAL_BUFFER=$(mktemp)
 
 ts() {
   # Convert a datetime string to milliseconds
@@ -24,14 +25,13 @@ add_event() {
   local room_id="$1" timestamp="$2" channel="$3" payload="$4"
   SEQ=$((SEQ + 1))
   local stream_id="${timestamp}-${SEQ}"
+  # Room stream
   $R XADD "claude:room:${room_id}:stream" "$stream_id" \
     channel "$channel" \
     payload "$payload" \
     room "$room_id" > /dev/null
-  $R XADD "claude:stream" "$stream_id" \
-    channel "$channel" \
-    payload "$payload" \
-    room "$room_id" > /dev/null
+  # Buffer for global stream (inserted sorted at the end)
+  printf '%s\t%s\t%s\t%s\n' "$timestamp" "$channel" "$room_id" "$payload" >> "$GLOBAL_BUFFER"
 }
 
 join_session() {
@@ -609,6 +609,18 @@ T=$((T + 18000))
 broadcast "$ROOM" bob "I'll handle that after the post-mortem. Good catch diana." "$T"
 
 # No leave events for active sessions — they're still in the room.
+
+# --- Flush global stream (sorted by timestamp) ---
+echo "Flushing global stream (sorted)..."
+GSEQ=0
+sort -t$'\t' -k1,1n "$GLOBAL_BUFFER" | while IFS=$'\t' read -r ts channel room_id payload; do
+  GSEQ=$((GSEQ + 1))
+  $R XADD "claude:stream" "${ts}-${GSEQ}" \
+    channel "$channel" \
+    payload "$payload" \
+    room "$room_id" > /dev/null
+done
+rm -f "$GLOBAL_BUFFER"
 
 echo ""
 echo "Done. Stats:"
