@@ -50,20 +50,19 @@
   .session-card .goal { color: #8b949e; font-size: 12px; margin-top: 2px; }
   .session-card .started { color: #484f58; font-size: 11px; margin-top: 4px; }
 
-  /* Git-graph sequence panel */
-  #sequence-panel { }
-  #sequence-wrap { flex: 1; overflow-y: auto; overflow-x: auto; }
-  #sequence-svg { display: block; min-width: 100%; }
-  .gg-line { fill: none; stroke-width: 2.5; stroke-linecap: round; }
-  .gg-line-dead { stroke-dasharray: 4 3; opacity: 0.3; }
-  .gg-node { stroke: #0d1117; stroke-width: 2; cursor: pointer; }
-  .gg-connector { fill: none; stroke-width: 1.5; opacity: 0.55; }
-  .gg-connector-bc { stroke-dasharray: 5 3; }
-  .gg-col-label { font-size: 11px; font-weight: 600; fill: #c9d1d9; text-anchor: middle; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-  .gg-tooltip { pointer-events: none; }
-  .gg-tooltip rect { fill: #1c2128; stroke: #30363d; rx: 4; }
-  .gg-tooltip text { fill: #c9d1d9; font-size: 11px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-  .gg-time { font-size: 10px; fill: #484f58; text-anchor: end; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  /* Timeline panel */
+  #sequence-panel { position: relative; }
+  #timeline-container { flex: 1; overflow: hidden; position: relative; }
+  #timeline-svg { display: block; width: 100%; height: 100%; }
+  .timeline-tooltip {
+    position: absolute; pointer-events: none; background: #1c2128; border: 1px solid #30363d;
+    border-radius: 6px; padding: 8px 12px; font-size: 12px; color: #c9d1d9; max-width: 300px;
+    z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.4); display: none; line-height: 1.5;
+  }
+  .timeline-tooltip .tt-from { font-weight: 600; color: #f0f6fc; }
+  .timeline-tooltip .tt-channel { color: #8b949e; font-size: 11px; }
+  .timeline-tooltip .tt-time { color: #484f58; font-size: 11px; }
+  .timeline-tooltip .tt-body { color: #c9d1d9; margin-top: 4px; word-break: break-word; }
 
   @media (max-width: 900px) {
     .container { grid-template-columns: 1fr; }
@@ -94,50 +93,49 @@
   </div>
 
   <div class="panel" id="sequence-panel">
-    <div class="panel-header">Git Graph</div>
-    <div id="sequence-wrap">
-      <svg id="sequence-svg"></svg>
+    <div class="panel-header">Timeline</div>
+    <div id="timeline-container">
+      <svg id="timeline-svg"></svg>
+      <div class="timeline-tooltip" id="timeline-tooltip"></div>
     </div>
   </div>
 </div>
 
 <script>
-const sessions = new Map();
-const messages = [];
-const edges = new Map(); // "from->to" => count
+var sessions = new Map();
+var messages = [];
+var edges = new Map();
 
 // --- SSE Connection ---
-let evtSource;
+var evtSource;
 function connect() {
   evtSource = new EventSource('/events');
-  evtSource.onopen = () => {
+  evtSource.onopen = function() {
     document.getElementById('status-dot').className = 'dot connected';
     document.getElementById('status-text').textContent = 'Connected';
   };
-  evtSource.onerror = () => {
+  evtSource.onerror = function() {
     document.getElementById('status-dot').className = 'dot disconnected';
     document.getElementById('status-text').textContent = 'Reconnecting...';
   };
-  evtSource.onmessage = (e) => {
-    const event = JSON.parse(e.data);
+  evtSource.onmessage = function(e) {
+    var event = JSON.parse(e.data);
     handleEvent(event);
   };
 }
 
 function handleEvent(event) {
   if (event.event_type === 'sessions') {
-    // Full session list update
-    const sessionData = JSON.parse(event.body);
+    var sessionData = JSON.parse(event.body);
     sessions.clear();
-    sessionData.forEach(([name, data]) => {
-      sessions.set(name, data);
+    sessionData.forEach(function(pair) {
+      sessions.set(pair[0], pair[1]);
     });
     renderSessions();
     updateGraph();
     return;
   }
 
-  // Chat message
   messages.push(event);
   if (messages.length > 200) messages.shift();
 
@@ -149,13 +147,12 @@ function handleEvent(event) {
     renderSessions();
   }
 
-  // Track edges for graph
   if (event.from && event.from !== 'unknown' && event.from !== '_system') {
-    let target = 'broadcast';
+    var target = 'broadcast';
     if (event.channel.startsWith('claude:session:')) {
       target = event.channel.replace('claude:session:', '');
     }
-    const key = `${event.from}->${target}`;
+    var key = event.from + '->' + target;
     edges.set(key, (edges.get(key) || 0) + 1);
   }
 
@@ -166,336 +163,343 @@ function handleEvent(event) {
 
 // --- Sessions List ---
 function renderSessions() {
-  const el = document.getElementById('sessions-list');
-  const count = document.getElementById('session-count');
-  count.textContent = `${sessions.size} session${sessions.size !== 1 ? 's' : ''} online`;
+  var el = document.getElementById('sessions-list');
+  var count = document.getElementById('session-count');
+  count.textContent = sessions.size + ' session' + (sessions.size !== 1 ? 's' : '') + ' online';
 
   el.innerHTML = '';
-  sessions.forEach((data, name) => {
-    const card = document.createElement('div');
+  sessions.forEach(function(data, name) {
+    var card = document.createElement('div');
     card.className = 'session-card';
-    const goal = typeof data === 'object' ? (data.goal || 'unknown') : data;
-    const started = typeof data === 'object' && data.started
+    var goal = typeof data === 'object' ? (data.goal || 'unknown') : data;
+    var started = typeof data === 'object' && data.started
       ? new Date(data.started).toLocaleTimeString() : '';
-    card.innerHTML = `
-      <div class="name">${esc(name)}</div>
-      <div class="goal">${esc(goal)}</div>
-      ${started ? `<div class="started">since ${started}</div>` : ''}
-    `;
+    card.innerHTML = '<div class="name">' + esc(name) + '</div>'
+      + '<div class="goal">' + esc(goal) + '</div>'
+      + (started ? '<div class="started">since ' + started + '</div>' : '');
     el.appendChild(card);
   });
 }
 
 // --- Chat Feed ---
 function renderChat() {
-  const el = document.getElementById('chat-messages');
-  const last10 = messages.slice(-50);
+  var el = document.getElementById('chat-messages');
+  var last50 = messages.slice(-50);
   el.innerHTML = '';
-  last10.forEach(msg => {
-    const div = document.createElement('div');
-    div.className = `chat-msg ${msg.event_type}`;
-    const time = new Date(msg.timestamp).toLocaleTimeString();
-    const ch = msg.channel.replace('claude:', '');
+  last50.forEach(function(msg) {
+    var div = document.createElement('div');
+    div.className = 'chat-msg ' + msg.event_type;
+    var time = new Date(msg.timestamp).toLocaleTimeString();
+    var ch = msg.channel.replace('claude:', '');
 
     if (msg.event_type === 'join') {
-      div.innerHTML = `<span class="time">${time}</span> <b>${esc(msg.from)}</b> joined — ${esc(msg.body)}`;
+      div.innerHTML = '<span class="time">' + time + '</span> <b>' + esc(msg.from) + '</b> joined — ' + esc(msg.body);
     } else if (msg.event_type === 'leave') {
-      div.innerHTML = `<span class="time">${time}</span> <b>${esc(msg.from)}</b> left`;
+      div.innerHTML = '<span class="time">' + time + '</span> <b>' + esc(msg.from) + '</b> left';
     } else {
-      div.innerHTML = `
-        <div class="meta">
-          <span class="from">${esc(msg.from)}</span>
-          <span class="channel">#${esc(ch)}</span>
-          <span class="time">${time}</span>
-        </div>
-        <div class="body">${esc(msg.body)}</div>
-      `;
+      div.innerHTML = '<div class="meta">'
+        + '<span class="from">' + esc(msg.from) + '</span>'
+        + '<span class="channel">#' + esc(ch) + '</span>'
+        + '<span class="time">' + time + '</span>'
+        + '</div>'
+        + '<div class="body">' + esc(msg.body) + '</div>';
     }
     el.appendChild(div);
   });
   el.scrollTop = el.scrollHeight;
 }
 
-// --- Git-Graph Sequence Visualization ---
-const GG_COLORS = ['#58a6ff', '#f0883e', '#3fb950', '#bc8cff', '#f778ba', '#79c0ff', '#d2a8ff'];
-const GG = {
-  colW: 100,       // horizontal spacing between session columns
-  rowH: 44,        // vertical spacing between event rows
-  leftPad: 60,     // left margin for timestamps
-  topPad: 36,      // top margin for column labels
-  nodeR: 6,        // node circle radius
-  joinR: 8,        // join/leave marker radius
-};
+// --- Gantt-style Timeline ---
+var sessionOrder = [];
+var tlMargin = { top: 14, right: 20, bottom: 32, left: 80 };
+var tlSvg, tlG, xScale, yScale, xAxisG, lanesG, markersG, connectorsG, subConvG, labelsG;
+var tlInited = false;
 
-// Track session column order persistently
-const ggColumns = [];             // ordered list of session names
-const ggDeadSessions = new Set(); // sessions that have left
+function initTimeline() {
+  if (tlInited) return;
+  tlInited = true;
+  tlSvg = d3.select('#timeline-svg');
+  var container = document.getElementById('timeline-container');
+  var width = container.clientWidth || 400;
+  var height = container.clientHeight || 300;
+  var innerW = width - tlMargin.left - tlMargin.right;
+  var innerH = height - tlMargin.top - tlMargin.bottom;
 
-function ggColIndex(name) {
-  let idx = ggColumns.indexOf(name);
-  if (idx === -1) {
-    ggColumns.push(name);
-    idx = ggColumns.length - 1;
-  }
-  return idx;
-}
+  tlSvg.attr('width', width).attr('height', height);
 
-function ggX(name) {
-  return GG.leftPad + ggColIndex(name) * GG.colW + GG.colW / 2;
-}
+  tlSvg.append('defs').append('clipPath').attr('id', 'tl-clip')
+    .append('rect').attr('width', innerW).attr('height', innerH);
 
-function ggColor(name) {
-  return GG_COLORS[ggColIndex(name) % GG_COLORS.length];
+  tlG = tlSvg.append('g').attr('transform', 'translate(' + tlMargin.left + ',' + tlMargin.top + ')');
+
+  xScale = d3.scaleTime().range([0, innerW]);
+  yScale = d3.scaleBand().range([0, innerH]).padding(0.25);
+
+  subConvG = tlG.append('g').attr('class', 'tl-subconv').attr('clip-path', 'url(#tl-clip)');
+  lanesG = tlG.append('g').attr('class', 'tl-lanes').attr('clip-path', 'url(#tl-clip)');
+  connectorsG = tlG.append('g').attr('class', 'tl-connectors').attr('clip-path', 'url(#tl-clip)');
+  markersG = tlG.append('g').attr('class', 'tl-markers').attr('clip-path', 'url(#tl-clip)');
+  labelsG = tlSvg.append('g').attr('class', 'tl-labels').attr('transform', 'translate(0,' + tlMargin.top + ')');
+  xAxisG = tlG.append('g').attr('class', 'tl-xaxis');
 }
 
 function renderSequence() {
-  const wrap = document.getElementById('sequence-wrap');
-  const svg = d3.select('#sequence-svg');
-  svg.selectAll('*').remove();
+  initTimeline();
+  var container = document.getElementById('timeline-container');
+  if (!container || !tlSvg) return;
+  var width = container.clientWidth || 400;
+  var height = container.clientHeight || 300;
+  var innerW = width - tlMargin.left - tlMargin.right;
+  var innerH = height - tlMargin.top - tlMargin.bottom;
 
-  // Filter relevant messages
-  const events = messages.filter(m =>
-    m.event_type === 'message' || m.event_type === 'join' || m.event_type === 'leave'
-  ).slice(-60);
+  tlSvg.attr('width', width).attr('height', height);
+  tlSvg.select('#tl-clip rect').attr('width', innerW).attr('height', innerH);
 
-  if (events.length === 0) return;
+  var relevant = messages.filter(function(m) {
+    return m.event_type === 'message' || m.event_type === 'join' || m.event_type === 'leave';
+  });
+  if (relevant.length === 0) return;
 
-  // Ensure columns exist for all referenced sessions
-  events.forEach(ev => {
-    if (ev.from && ev.from !== 'unknown' && ev.from !== '_system') {
-      ggColIndex(ev.from);
+  // Build session order
+  relevant.forEach(function(m) {
+    if (m.from && m.from !== 'unknown' && m.from !== '_system' && sessionOrder.indexOf(m.from) === -1) {
+      sessionOrder.push(m.from);
+    }
+    var ch = m.channel || '';
+    if (ch.startsWith('claude:session:')) {
+      var tgt = ch.replace('claude:session:', '');
+      if (sessionOrder.indexOf(tgt) === -1) sessionOrder.push(tgt);
     }
   });
 
-  const numCols = ggColumns.length;
-  const numRows = events.length;
-  const svgW = GG.leftPad + numCols * GG.colW + 40;
-  const svgH = GG.topPad + numRows * GG.rowH + 40;
-
-  svg.attr('width', svgW).attr('height', svgH);
-
-  // Defs for arrowheads per color
-  const defs = svg.append('defs');
-  GG_COLORS.forEach((color, i) => {
-    defs.append('marker')
-      .attr('id', 'gg-arrow-' + i)
-      .attr('viewBox', '0 0 10 10')
-      .attr('refX', 10).attr('refY', 5)
-      .attr('markerWidth', 5).attr('markerHeight', 5)
-      .attr('orient', 'auto-start-reverse')
-      .append('path')
-      .attr('d', 'M 0 0 L 10 5 L 0 10 z')
-      .attr('fill', color);
-  });
-
-  // Layers: lines behind, connectors, then nodes on top
-  const lineLayer = svg.append('g');
-  const connLayer = svg.append('g');
-  const nodeLayer = svg.append('g');
-  const labelLayer = svg.append('g');
-  const tipLayer = svg.append('g');
-
-  // Column header labels
-  ggColumns.forEach((name, ci) => {
-    const x = GG.leftPad + ci * GG.colW + GG.colW / 2;
-    labelLayer.append('text')
-      .attr('class', 'gg-col-label')
-      .attr('x', x).attr('y', 16)
-      .attr('fill', ggColor(name))
-      .text(name);
-    // Faint vertical guide
-    lineLayer.append('line')
-      .attr('x1', x).attr('x2', x)
-      .attr('y1', GG.topPad - 8).attr('y2', svgH - 10)
-      .attr('stroke', ggColor(name))
-      .attr('stroke-width', 1)
-      .attr('opacity', 0.08);
-  });
-
-  // Compute per-session first/last row and alive set at each row
-  const sessionFirstRow = {};
-  const sessionLastRow = {};
-  const aliveAtRow = [];
-  const alive = new Set();
-
-  events.forEach((ev, ri) => {
-    const name = ev.from;
-    if (ev.event_type === 'join') alive.add(name);
-    aliveAtRow.push(new Set(alive));
-    if (name && name !== 'unknown' && name !== '_system') {
-      if (!(name in sessionFirstRow)) sessionFirstRow[name] = ri;
-      sessionLastRow[name] = ri;
+  // Parse timeline events
+  var timelineEvents = [];
+  relevant.forEach(function(m) {
+    var t = new Date(m.timestamp);
+    var ch = m.channel || '';
+    var target = null;
+    if (ch.startsWith('claude:session:')) {
+      target = ch.replace('claude:session:', '');
     }
-    if (ev.event_type === 'leave') alive.delete(name);
+    var isBroadcast = ch === 'claude:questions';
+    var kind = 'lobby';
+    if (isBroadcast) kind = 'broadcast';
+    else if (target) kind = 'dm';
+
+    timelineEvents.push({
+      time: t, type: m.event_type, from: m.from, target: target,
+      channel: ch, body: m.body || '', kind: kind
+    });
   });
 
-  // Draw vertical branch lines per session (solid colored lines)
-  ggColumns.forEach(name => {
-    if (!(name in sessionFirstRow)) return;
-    const x = ggX(name);
-    const y1 = GG.topPad + sessionFirstRow[name] * GG.rowH;
-    const y2 = GG.topPad + sessionLastRow[name] * GG.rowH;
-    const isDead = ggDeadSessions.has(name);
+  if (timelineEvents.length === 0) return;
 
-    lineLayer.append('line')
-      .attr('class', 'gg-line' + (isDead ? ' gg-line-dead' : ''))
-      .attr('x1', x).attr('x2', x)
-      .attr('y1', y1).attr('y2', y2)
-      .attr('stroke', ggColor(name));
-  });
+  // Update scales
+  var times = timelineEvents.map(function(e) { return e.time.getTime(); });
+  var tMin = Math.min.apply(null, times);
+  var tMax = Math.max.apply(null, times);
+  var span = Math.max(tMax - tMin, 1000);
+  var pad = span * 0.1;
+  xScale.domain([new Date(tMin - pad), new Date(tMax + pad)]).range([0, innerW]);
+  yScale.domain(sessionOrder).range([0, innerH]);
 
-  // Render each event as a row
-  events.forEach((ev, ri) => {
-    const y = GG.topPad + ri * GG.rowH;
-    const name = ev.from;
-    const x = (name && name !== 'unknown' && name !== '_system') ? ggX(name) : GG.leftPad + 20;
-    const color = (name && name !== 'unknown' && name !== '_system') ? ggColor(name) : '#8b949e';
+  // X axis
+  xAxisG.attr('transform', 'translate(0,' + innerH + ')').call(
+    d3.axisBottom(xScale).ticks(Math.max(Math.floor(innerW / 100), 3)).tickFormat(d3.timeFormat('%H:%M:%S'))
+  );
+  xAxisG.selectAll('text').attr('fill', '#8b949e').attr('font-size', '10px');
+  xAxisG.selectAll('line, path').attr('stroke', '#30363d');
 
-    // Timestamp on left
-    const time = new Date(ev.timestamp).toLocaleTimeString();
-    labelLayer.append('text')
-      .attr('class', 'gg-time')
-      .attr('x', GG.leftPad - 8).attr('y', y + 4)
-      .text(time);
+  // Swim lane backgrounds
+  var lanes = lanesG.selectAll('rect.lane').data(sessionOrder, function(d) { return d; });
+  lanes.exit().remove();
+  lanes.enter().append('rect').attr('class', 'lane')
+    .merge(lanes)
+    .attr('x', 0).attr('y', function(d) { return yScale(d); })
+    .attr('width', innerW).attr('height', yScale.bandwidth())
+    .attr('fill', function(d, i) { return i % 2 === 0 ? '#161b22' : '#0d1117'; })
+    .attr('rx', 2);
 
-    if (ev.event_type === 'join') {
-      // Diamond marker for branch creation
-      nodeLayer.append('rect')
-        .attr('x', x - 7).attr('y', y - 7)
-        .attr('width', 14).attr('height', 14)
-        .attr('rx', 2)
-        .attr('transform', 'rotate(45, ' + x + ', ' + y + ')')
-        .attr('fill', '#3fb950')
-        .attr('class', 'gg-node')
-        .attr('stroke', '#0d1117');
+  // Lane dividers
+  var dividers = lanesG.selectAll('line.lane-div').data(sessionOrder, function(d) { return d; });
+  dividers.exit().remove();
+  dividers.enter().append('line').attr('class', 'lane-div')
+    .merge(dividers)
+    .attr('x1', 0).attr('y1', function(d) { return yScale(d) + yScale.bandwidth(); })
+    .attr('x2', innerW).attr('y2', function(d) { return yScale(d) + yScale.bandwidth(); })
+    .attr('stroke', '#21262d').attr('stroke-width', 1);
 
-      nodeLayer.append('text')
-        .attr('x', x).attr('y', y + 1)
-        .attr('text-anchor', 'middle')
-        .attr('dominant-baseline', 'central')
-        .attr('fill', '#0d1117')
-        .attr('font-size', '10px')
-        .attr('font-weight', '700')
-        .text('+');
+  // Session labels
+  var lbls = labelsG.selectAll('text.lane-label').data(sessionOrder, function(d) { return d; });
+  lbls.exit().remove();
+  lbls.enter().append('text').attr('class', 'lane-label')
+    .merge(lbls)
+    .attr('x', tlMargin.left - 8)
+    .attr('y', function(d) { return yScale(d) + yScale.bandwidth() / 2 + 4; })
+    .attr('text-anchor', 'end')
+    .attr('fill', '#c9d1d9').attr('font-size', '12px')
+    .attr('font-family', '-apple-system, BlinkMacSystemFont, sans-serif')
+    .attr('font-weight', '600')
+    .text(function(d) { return d; });
 
-      labelLayer.append('text')
-        .attr('x', x + 16).attr('y', y + 4)
-        .attr('fill', '#3fb950')
-        .attr('font-size', '11px')
-        .text('joined');
-
-    } else if (ev.event_type === 'leave') {
-      // Circle with X for branch termination
-      nodeLayer.append('circle')
-        .attr('cx', x).attr('cy', y).attr('r', GG.joinR)
-        .attr('fill', '#f85149')
-        .attr('class', 'gg-node');
-
-      nodeLayer.append('text')
-        .attr('x', x).attr('y', y + 1)
-        .attr('text-anchor', 'middle')
-        .attr('dominant-baseline', 'central')
-        .attr('fill', '#0d1117')
-        .attr('font-size', '10px')
-        .attr('font-weight', '700')
-        .text('\u00d7');
-
-      labelLayer.append('text')
-        .attr('x', x + 16).attr('y', y + 4)
-        .attr('fill', '#f85149')
-        .attr('font-size', '11px')
-        .text('left');
-
-    } else {
-      // Message node: colored dot on sender column
-      nodeLayer.append('circle')
-        .attr('cx', x).attr('cy', y).attr('r', GG.nodeR)
-        .attr('fill', color)
-        .attr('class', 'gg-node');
-
-      const ch = ev.channel.replace('claude:', '');
-      const isBroadcast = ch === 'questions';
-      const isDM = ch.startsWith('session:');
-      const dmTarget = isDM ? ch.replace('session:', '') : null;
-
-      if (isBroadcast) {
-        // Horizontal dashed connectors to all other alive sessions
-        const aliveHere = aliveAtRow[ri];
-        aliveHere.forEach(other => {
-          if (other === name) return;
-          const ox = ggX(other);
-          const x1 = Math.min(x, ox) + GG.nodeR + 2;
-          const x2 = Math.max(x, ox) - GG.nodeR - 2;
-          connLayer.append('line')
-            .attr('class', 'gg-connector gg-connector-bc')
-            .attr('x1', x1).attr('y1', y)
-            .attr('x2', x2).attr('y2', y)
-            .attr('stroke', color);
-          // Small receiver dot
-          connLayer.append('circle')
-            .attr('cx', ox).attr('cy', y).attr('r', 3)
-            .attr('fill', color).attr('opacity', 0.5);
-        });
-      } else if (isDM && dmTarget) {
-        // Curved bezier connector (like git merge arc)
-        const tx = ggX(dmTarget);
-        const cp = Math.abs(tx - x) * 0.4;
-        const dir = x < tx ? 1 : -1;
-        const path = 'M ' + (x + dir * (GG.nodeR + 2)) + ' ' + y +
-          ' C ' + (x + dir * cp) + ' ' + (y - 16) +
-          ', ' + (tx - dir * cp) + ' ' + (y - 16) +
-          ', ' + (tx - dir * (GG.nodeR + 2)) + ' ' + y;
-        connLayer.append('path')
-          .attr('class', 'gg-connector')
-          .attr('d', path)
-          .attr('stroke', color)
-          .attr('marker-end', 'url(#gg-arrow-' + (ggColIndex(name) % GG_COLORS.length) + ')');
-        // Receiver dot
-        connLayer.append('circle')
-          .attr('cx', tx).attr('cy', y).attr('r', 3)
-          .attr('fill', ggColor(dmTarget)).attr('opacity', 0.6);
+  // Detect sub-conversations
+  var subConvs = [];
+  for (var i = 0; i < timelineEvents.length; i++) {
+    var e = timelineEvents[i];
+    if (e.kind !== 'dm' || !e.target) continue;
+    for (var j = i + 1; j < timelineEvents.length && j <= i + 4; j++) {
+      var f = timelineEvents[j];
+      if (f.kind === 'dm' && f.from === e.target && f.target === e.from) {
+        subConvs.push({ a: e.from, b: e.target, t0: e.time, t1: f.time });
+        break;
       }
-
-      // Tooltip (hidden until hover)
-      const bodyShort = (ev.body || '').length > 40 ? ev.body.slice(0, 40) + '...' : (ev.body || '');
-      const tipW = Math.max(bodyShort.length * 6.5 + 16, 80);
-      const tipX = x + 14;
-      const tipY = y - 14;
-
-      const tipG = tipLayer.append('g')
-        .attr('class', 'gg-tooltip')
-        .attr('opacity', 0);
-
-      tipG.append('rect')
-        .attr('x', tipX).attr('y', tipY - 10)
-        .attr('width', tipW).attr('height', 20)
-        .attr('rx', 4);
-
-      tipG.append('text')
-        .attr('x', tipX + 6).attr('y', tipY + 4)
-        .text(bodyShort);
-
-      // Invisible hover target
-      nodeLayer.append('circle')
-        .attr('cx', x).attr('cy', y).attr('r', 14)
-        .attr('fill', 'transparent')
-        .attr('cursor', 'pointer')
-        .on('mouseenter', function() { tipG.attr('opacity', 1); })
-        .on('mouseleave', function() { tipG.attr('opacity', 0); });
     }
+  }
+
+  // Draw sub-conversation bands
+  subConvG.selectAll('*').remove();
+  subConvs.forEach(function(sc) {
+    var yA = yScale(sc.a);
+    var yB = yScale(sc.b);
+    if (yA === undefined || yB === undefined) return;
+    var yTop = Math.min(yA, yB);
+    var yBot = Math.max(yA, yB) + yScale.bandwidth();
+    var x0 = xScale(sc.t0);
+    var x1 = xScale(sc.t1);
+    subConvG.append('rect')
+      .attr('x', Math.min(x0, x1) - 6)
+      .attr('y', yTop)
+      .attr('width', Math.max(Math.abs(x1 - x0) + 12, 16))
+      .attr('height', yBot - yTop)
+      .attr('fill', 'rgba(240, 136, 62, 0.08)')
+      .attr('stroke', 'rgba(240, 136, 62, 0.3)')
+      .attr('stroke-width', 1)
+      .attr('rx', 4);
   });
 
-  // Auto-scroll to bottom
-  wrap.scrollTop = wrap.scrollHeight;
+  // Draw connectors and markers
+  connectorsG.selectAll('*').remove();
+  markersG.selectAll('*').remove();
+
+  var tooltipEl = document.getElementById('timeline-tooltip');
+
+  timelineEvents.forEach(function(ev) {
+    if (sessionOrder.indexOf(ev.from) === -1) return;
+    var midY = yScale(ev.from) + yScale.bandwidth() / 2;
+    var cx = xScale(ev.time);
+
+    if (ev.type === 'join') {
+      markersG.append('polygon')
+        .attr('points', (cx-6)+','+(midY+5)+' '+(cx+6)+','+(midY+5)+' '+cx+','+(midY-6))
+        .attr('fill', '#3fb950').attr('cursor', 'pointer')
+        .on('mouseover', function(e) { showTooltip(e, ev, tooltipEl); })
+        .on('mouseout', function() { hideTooltip(tooltipEl); });
+      markersG.append('text')
+        .attr('x', cx).attr('y', midY + 16)
+        .attr('text-anchor', 'middle').attr('fill', '#3fb950')
+        .attr('font-size', '8px').attr('font-family', 'sans-serif')
+        .text('join');
+    } else if (ev.type === 'leave') {
+      var s = 5;
+      markersG.append('line').attr('x1', cx-s).attr('y1', midY-s).attr('x2', cx+s).attr('y2', midY+s).attr('stroke', '#f85149').attr('stroke-width', 2.5).attr('stroke-linecap', 'round');
+      markersG.append('line').attr('x1', cx+s).attr('y1', midY-s).attr('x2', cx-s).attr('y2', midY+s).attr('stroke', '#f85149').attr('stroke-width', 2.5).attr('stroke-linecap', 'round');
+      markersG.append('circle').attr('cx', cx).attr('cy', midY).attr('r', 10).attr('fill', 'transparent').attr('cursor', 'pointer')
+        .on('mouseover', function(e) { showTooltip(e, ev, tooltipEl); })
+        .on('mouseout', function() { hideTooltip(tooltipEl); });
+    } else if (ev.kind === 'broadcast') {
+      var yTop = yScale(sessionOrder[0]);
+      var yBot = yScale(sessionOrder[sessionOrder.length - 1]) + yScale.bandwidth();
+      connectorsG.append('line')
+        .attr('x1', cx).attr('y1', yTop).attr('x2', cx).attr('y2', yBot)
+        .attr('stroke', '#58a6ff').attr('stroke-width', 1.5)
+        .attr('stroke-dasharray', '5 3').attr('opacity', 0.5);
+      markersG.append('circle')
+        .attr('cx', cx).attr('cy', midY).attr('r', 5)
+        .attr('fill', '#58a6ff').attr('stroke', '#0d1117').attr('stroke-width', 1)
+        .attr('cursor', 'pointer')
+        .on('mouseover', function(e) { showTooltip(e, ev, tooltipEl); })
+        .on('mouseout', function() { hideTooltip(tooltipEl); });
+      sessionOrder.forEach(function(sName) {
+        if (sName === ev.from) return;
+        var sy = yScale(sName) + yScale.bandwidth() / 2;
+        markersG.append('circle')
+          .attr('cx', cx).attr('cy', sy).attr('r', 3)
+          .attr('fill', '#58a6ff').attr('opacity', 0.5);
+      });
+      var labelShort = ev.body.length > 22 ? ev.body.slice(0, 22) + '..' : ev.body;
+      markersG.append('text')
+        .attr('x', cx).attr('y', yTop - 3)
+        .attr('text-anchor', 'middle').attr('fill', '#58a6ff')
+        .attr('font-size', '9px').attr('font-family', 'sans-serif').attr('opacity', 0.8)
+        .text(labelShort);
+    } else if (ev.kind === 'dm' && ev.target && sessionOrder.indexOf(ev.target) !== -1) {
+      var targetMidY = yScale(ev.target) + yScale.bandwidth() / 2;
+      connectorsG.append('line')
+        .attr('x1', cx).attr('y1', midY).attr('x2', cx).attr('y2', targetMidY)
+        .attr('stroke', '#f0883e').attr('stroke-width', 1.5).attr('opacity', 0.7);
+      var dir = targetMidY > midY ? 1 : -1;
+      markersG.append('polygon')
+        .attr('points', (cx-4)+','+(targetMidY - dir*7)+' '+(cx+4)+','+(targetMidY - dir*7)+' '+cx+','+targetMidY)
+        .attr('fill', '#f0883e');
+      markersG.append('circle')
+        .attr('cx', cx).attr('cy', midY).attr('r', 5)
+        .attr('fill', '#f0883e').attr('stroke', '#0d1117').attr('stroke-width', 1)
+        .attr('cursor', 'pointer')
+        .on('mouseover', function(e) { showTooltip(e, ev, tooltipEl); })
+        .on('mouseout', function() { hideTooltip(tooltipEl); });
+      var dmLabel = ev.body.length > 18 ? ev.body.slice(0, 18) + '..' : ev.body;
+      var labelY = Math.min(midY, targetMidY) - 4;
+      markersG.append('text')
+        .attr('x', cx + 6).attr('y', labelY)
+        .attr('text-anchor', 'start').attr('fill', '#f0883e')
+        .attr('font-size', '9px').attr('font-family', 'sans-serif').attr('opacity', 0.8)
+        .text(dmLabel);
+    } else {
+      markersG.append('circle')
+        .attr('cx', cx).attr('cy', midY).attr('r', 4)
+        .attr('fill', '#3fb950').attr('cursor', 'pointer')
+        .on('mouseover', function(e) { showTooltip(e, ev, tooltipEl); })
+        .on('mouseout', function() { hideTooltip(tooltipEl); });
+    }
+  });
+}
+
+function showTooltip(event, ev, el) {
+  var time = ev.time.toLocaleTimeString();
+  var ch = (ev.channel || '').replace('claude:', '');
+  var typeLabel = ev.type;
+  if (ev.type === 'join') typeLabel = 'Joined';
+  else if (ev.type === 'leave') typeLabel = 'Left';
+  else if (ev.kind === 'broadcast') typeLabel = 'Broadcast';
+  else if (ev.kind === 'dm') typeLabel = 'DM -> ' + (ev.target || '?');
+
+  el.innerHTML = '<div class="tt-from">' + esc(ev.from) + '</div>'
+    + '<div class="tt-channel">' + esc(typeLabel) + ' &middot; #' + esc(ch) + '</div>'
+    + '<div class="tt-time">' + time + '</div>'
+    + (ev.body ? '<div class="tt-body">' + esc(ev.body) + '</div>' : '');
+  el.style.display = 'block';
+
+  var container = document.getElementById('timeline-container');
+  var rect = container.getBoundingClientRect();
+  var left = event.clientX - rect.left + 14;
+  var top = event.clientY - rect.top - 10;
+  if (left + 220 > rect.width) left = left - 240;
+  if (top < 0) top = 10;
+  el.style.left = left + 'px';
+  el.style.top = top + 'px';
+}
+
+function hideTooltip(el) {
+  el.style.display = 'none';
 }
 
 // --- D3 Force Graph ---
-let simulation, svg, linkGroup, nodeGroup;
+var simulation, svg, linkGroup, nodeGroup;
 
 function initGraph() {
   svg = d3.select('#graph');
-  const width = svg.node().parentElement.clientWidth;
-  const height = svg.node().parentElement.clientHeight - 35;
+  var width = svg.node().parentElement.clientWidth;
+  var height = svg.node().parentElement.clientHeight - 35;
 
   svg.attr('viewBox', '0 0 ' + width + ' ' + height);
 
@@ -512,32 +516,29 @@ function initGraph() {
 function updateGraph() {
   if (!simulation) return;
 
-  const nodes = Array.from(sessions.keys()).map(function(name) {
-    return { id: name, goal: sessions.get(name)?.goal || '' };
+  var nodes = Array.from(sessions.keys()).map(function(name) {
+    return { id: name, goal: (sessions.get(name) || {}).goal || '' };
   });
 
-  const links = [];
+  var links = [];
   edges.forEach(function(count, key) {
-    const parts = key.split('->');
-    const from = parts[0], to = parts[1];
+    var parts = key.split('->');
+    var from = parts[0]; var to = parts[1];
     if (from && to && to !== 'broadcast' && sessions.has(from) && sessions.has(to)) {
       links.push({ source: from, target: to, count: count });
     }
   });
 
-  const colors = ['#58a6ff', '#f0883e', '#3fb950', '#bc8cff', '#f778ba', '#79c0ff', '#d2a8ff'];
+  var colors = ['#58a6ff', '#f0883e', '#3fb950', '#bc8cff', '#f778ba', '#79c0ff', '#d2a8ff'];
 
-  const link = linkGroup.selectAll('line').data(links, function(d) {
-    return (d.source.id || d.source) + '-' + (d.target.id || d.target);
-  });
+  var link = linkGroup.selectAll('line').data(links, function(d) { return (d.source.id || d.source) + '-' + (d.target.id || d.target); });
   link.exit().remove();
-  const linkEnter = link.enter().append('line').attr('class', 'link active')
-    .attr('stroke-width', function(d) { return Math.min(d.count + 1, 5); });
-  const linkMerged = linkEnter.merge(link);
+  var linkEnter = link.enter().append('line').attr('class', 'link active').attr('stroke-width', function(d) { return Math.min(d.count + 1, 5); });
+  var linkMerged = linkEnter.merge(link);
 
-  const node = nodeGroup.selectAll('g.node').data(nodes, function(d) { return d.id; });
+  var node = nodeGroup.selectAll('g.node').data(nodes, function(d) { return d.id; });
   node.exit().remove();
-  const nodeEnter = node.enter().append('g').attr('class', 'node').call(drag(simulation));
+  var nodeEnter = node.enter().append('g').attr('class', 'node').call(drag(simulation));
 
   nodeEnter.append('circle')
     .attr('r', 24)
@@ -554,7 +555,7 @@ function updateGraph() {
     .attr('text-anchor', 'middle')
     .text(function(d) { return d.goal.length > 30 ? d.goal.slice(0, 30) + '...' : d.goal; });
 
-  const nodeMerged = nodeEnter.merge(node);
+  var nodeMerged = nodeEnter.merge(node);
 
   simulation.nodes(nodes).on('tick', function() {
     linkMerged
@@ -575,7 +576,7 @@ function drag(sim) {
 }
 
 function esc(s) {
-  const d = document.createElement('div');
+  var d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
 }
