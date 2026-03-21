@@ -116,14 +116,39 @@ broadcast "$ROOM" charlie "Oh good call, I'll check that. What was the default i
 T=$((T + 12000))
 broadcast "$ROOM" bob "We went with 300 seconds. Seemed to strike a good balance." "$T"
 
+# DM thread: charlie asks bob for details on the pool config
+T=$((T + 8000))
+dm "$ROOM" charlie bob "hey bob, can you share that connection pool config you mentioned? I want to compare with ours" "$T"
+T=$((T + 15000))
+dm "$ROOM" bob charlie "sure, check infra/redis.toml — the pool section has max_connections=50 and idle_timeout=300" "$T"
+T=$((T + 12000))
+dm "$ROOM" charlie bob "ours is max_connections=10 with no idle_timeout set at all... that explains it" "$T"
+T=$((T + 10000))
+dm "$ROOM" bob charlie "yeah 10 is way too low for staging. bump it to 50 and add the idle timeout, should fix it" "$T"
+
 T=$(ts "2026-03-19 09:10:00")
 broadcast "$ROOM" diana "Alice, I had a question about PR #42 — does the new middleware handle the case where the JWT is expired but the refresh token is still valid?" "$T"
 T=$((T + 22000))
 broadcast "$ROOM" alice "Yes! There's a fallback path that checks the refresh token. It's in the token_validator module, around line 85." "$T"
+
+# DM thread: diana follows up privately with alice about TokenValidator
+T=$((T + 10000))
+dm "$ROOM" diana alice "quick q — does TokenValidator handle expired JWTs or do I need to check that separately?" "$T"
+T=$((T + 12000))
+dm "$ROOM" alice diana "it returns Err(TokenExpired) which you can match on. check the error enum in src/auth/errors.rs" "$T"
+T=$((T + 8000))
+dm "$ROOM" diana alice "perfect, that is exactly what I needed. will wire it into the rate limiter today" "$T"
+
 T=$((T + 15000))
 broadcast "$ROOM" eve "Nice. I'll need that for the webhook auth too. Can I reuse that module?" "$T"
 T=$((T + 10000))
 broadcast "$ROOM" alice "Absolutely, it's designed to be shared. Just import TokenValidator and call validate_or_refresh()." "$T"
+
+# DM: eve asks charlie about the health check
+T=$((T + 12000))
+dm "$ROOM" eve charlie "charlie, when you fix the pool issue can you also check if the health check endpoint is using the same pool? I think it might have its own" "$T"
+T=$((T + 15000))
+dm "$ROOM" charlie eve "good catch, I will check. the health check should definitely share the pool not create a new one" "$T"
 
 T=$(ts "2026-03-19 09:15:00")
 broadcast "$ROOM" diana "Today I'm planning to finish the rate limiter and start on the monitoring dashboard." "$T"
