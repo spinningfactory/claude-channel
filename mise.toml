@@ -3,10 +3,10 @@ description = "Build with all features"
 run = "cargo build --release --all-features"
 
 [tasks.up]
-description = "Start test infrastructure (redis, postgres, localstack)"
+description = "Start test infrastructure (redis, postgres, localstack, nats)"
 env = { AWS_ENDPOINT_URL = "http://localhost:4566", AWS_ACCESS_KEY_ID = "test", AWS_SECRET_ACCESS_KEY = "test", AWS_DEFAULT_REGION = "us-east-1" }
 run = """
-docker compose -f .devcontainer/docker-compose.yml up -d redis postgres localstack
+docker compose -f .devcontainer/docker-compose.yml up -d redis postgres localstack nats
 echo "Waiting for services..."
 until curl -s http://localhost:4566/_localstack/health 2>/dev/null | grep -q '"sqs"'; do sleep 1; done
 uvx --from awscli aws sqs create-queue --endpoint-url http://localhost:4566 --queue-name test-queue --region us-east-1 > /dev/null 2>&1 || true
@@ -78,7 +78,7 @@ echo ""
 """
 
 [tasks.test-all]
-description = "Full integration test (all 4 sources)"
+description = "Full integration test (all 5 sources)"
 depends = ["build", "up"]
 env = { AWS_ENDPOINT_URL = "http://localhost:4566", AWS_ACCESS_KEY_ID = "test", AWS_SECRET_ACCESS_KEY = "test", AWS_DEFAULT_REGION = "us-east-1" }
 run = """
@@ -107,6 +107,9 @@ sources:
   - type: postgres
     connection: "host=localhost port=15432 user=channel password=channel dbname=channel"
     channels: ["test_notify"]
+  - type: nats
+    url: "nats://localhost:14222"
+    subjects: ["test-events"]
 YAML
 
 fuser -k $PORT/tcp 2>/dev/null || true
@@ -132,7 +135,8 @@ for i in $(seq 1 15); do
     grep -q "Subscribed to channel" "$STDERR_LOG" 2>/dev/null && READY=$((READY + 1))
     grep -q "Listening on channel" "$STDERR_LOG" 2>/dev/null && READY=$((READY + 1))
     grep -q "Polling queue" "$STDERR_LOG" 2>/dev/null && READY=$((READY + 1))
-    [ "$READY" -ge 4 ] && break
+    grep -q "nats.*Subscribed to" "$STDERR_LOG" 2>/dev/null && READY=$((READY + 1))
+    [ "$READY" -ge 5 ] && break
     sleep 1
 done
 
@@ -146,16 +150,18 @@ curl -s -X POST http://127.0.0.1:$PORT/test -d 'webhook: test event' > /dev/null
 redis-cli -p 16379 PUBLISH test-events 'redis: test event' > /dev/null
 PGPASSWORD=channel psql -h localhost -p 15432 -U channel -d channel \
     -c "NOTIFY test_notify, 'postgres: test event'" > /dev/null
+# NATS protocol: CONNECT then PUB (text-based wire protocol)
+printf 'CONNECT {}\r\nPUB test-events 16\r\nnats: test event\r\n' | nc -q 1 localhost 14222 > /dev/null 2>&1
 
 # Wait for all events
 for i in $(seq 1 10); do
     COUNT=$(grep -c 'notifications/claude/channel' "$STDOUT_LOG" 2>/dev/null || echo 0)
-    [ "$COUNT" -ge 4 ] && break
+    [ "$COUNT" -ge 5 ] && break
     sleep 1
 done
 
 PASS=0 FAIL=0
-for source in webhook redis postgres sqs; do
+for source in webhook redis postgres sqs nats; do
     if grep -q "source.*$source" "$STDOUT_LOG"; then
         echo "  ✓ $source"
         PASS=$((PASS + 1))

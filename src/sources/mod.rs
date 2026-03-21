@@ -21,3 +21,6 @@ pub mod redis;
 
 #[cfg(feature = "postgres")]
 pub mod postgres;
+
+#[cfg(feature = "nats")]
+pub mod nats;

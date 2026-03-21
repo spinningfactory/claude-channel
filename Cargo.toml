@@ -9,6 +9,7 @@ webhook = []
 sqs = ["dep:aws-sdk-sqs", "dep:aws-config"]
 redis = ["dep:redis", "dep:futures"]
 postgres = ["dep:tokio-postgres", "dep:futures"]
+nats = ["dep:async-nats", "dep:futures"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -24,3 +25,4 @@ aws-config = { version = "1", optional = true }
 redis = { version = "0.27", features = ["tokio-comp", "aio"], optional = true }
 tokio-postgres = { version = "0.7", optional = true }
 futures = { version = "0.3", optional = true }
+async-nats = { version = "0.38", optional = true }

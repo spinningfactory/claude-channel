@@ -10,6 +10,7 @@ A configurable MCP channel server for [Claude Code](https://claude.ai/code). Agg
 | SQS | AWS SQS long-polling | `sqs` |
 | Redis | Pub/sub or BRPOP | `redis` |
 | PostgreSQL | LISTEN/NOTIFY | `postgres` |
+| NATS | Subject subscription | `nats` |
 
 ## Quick start
 
@@ -71,6 +72,10 @@ sources:
   - type: postgres
     connection: "host=localhost user=app dbname=mydb"
     channels: ["events"]
+
+  - type: nats
+    url: "nats://127.0.0.1:4222"
+    subjects: ["events.>", "alerts.*"]  # NATS wildcards supported
 ```
 
 See `examples/` for ready-to-use configs.
@@ -102,7 +107,7 @@ cargo build --release --features "webhook,redis"
 ```bash
 mise run build      # Build release binary with all features
 mise run test       # Quick webhook-only test (no containers)
-mise run test-all   # Full integration test (all 4 sources)
+mise run test-all   # Full integration test (all sources with containers)
 mise run up         # Start test infrastructure
 mise run down       # Stop test infrastructure
 mise run clean      # Stop infrastructure + cargo clean
@@ -121,9 +126,10 @@ src/
     sqs.rs             AWS SQS long-polling
     redis.rs           Redis pub/sub + BRPOP
     postgres.rs        PostgreSQL LISTEN/NOTIFY
+    nats.rs            NATS subject subscription
 examples/
   webhook.yaml         Minimal webhook-only config
-  all-sources.yaml     Config with all 4 source types
+  all-sources.yaml     Config with all 5 source types
 .devcontainer/         Docker Compose services for testing
 ```
 

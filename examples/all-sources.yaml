@@ -1,5 +1,5 @@
 server_name: "my-channel"
-instructions: "Events from external sources arrive as <channel source=\"my-channel\" ...>. Each event includes a 'source' meta field (webhook, sqs, redis, postgres)."
+instructions: "Events from external sources arrive as <channel source=\"my-channel\" ...>. Each event includes a 'source' meta field (webhook, sqs, redis, postgres, nats)."
 
 sources:
   - type: webhook
@@ -20,3 +20,7 @@ sources:
   - type: postgres
     connection: "host=localhost user=app password=secret dbname=mydb"
     channels: ["events", "deploy_notifications"]
+
+  - type: nats
+    url: "nats://127.0.0.1:4222"
+    subjects: ["events.>", "alerts.*"]

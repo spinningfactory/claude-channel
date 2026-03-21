@@ -99,6 +99,23 @@ async fn main() -> anyhow::Result<()> {
                     }
                 });
             }
+
+            #[cfg(feature = "nats")]
+            config::SourceConfig::Nats {
+                url,
+                subjects,
+            } => {
+                let source = sources::nats::NatsSource {
+                    url,
+                    subjects,
+                };
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = source.run(tx).await {
+                        eprintln!("[nats] Fatal: {}", e);
+                    }
+                });
+            }
         }
     }
 

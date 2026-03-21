@@ -60,6 +60,12 @@ pub enum SourceConfig {
         connection: String,
         channels: Vec<String>,
     },
+
+    #[cfg(feature = "nats")]
+    Nats {
+        url: String,
+        subjects: Vec<String>,
+    },
 }
 
 #[cfg(feature = "redis")]
