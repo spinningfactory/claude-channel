@@ -390,10 +390,8 @@ function handleEvent(event) {
   }
 
   if (event.from && event.from !== 'unknown' && event.from !== '_system') {
-    var target = 'broadcast';
-    if (event.channel.startsWith('claude:session:')) {
-      target = event.channel.replace('claude:session:', '');
-    }
+    var parsed = parseChannel(event.channel);
+    var target = parsed.type === 'dm' ? parsed.target : 'broadcast';
     var key = event.from + '->' + target;
     edges.set(key, (edges.get(key) || 0) + 1);
   }
@@ -432,17 +430,19 @@ function renderChat() {
     var div = document.createElement('div');
     div.className = 'chat-msg ' + msg.event_type;
     var time = new Date(msg.timestamp).toLocaleTimeString();
-    var ch = msg.channel.replace('claude:', '');
+    var parsed = parseChannel(msg.channel);
+    var sColor = sessionColor(msg.from);
 
     if (msg.event_type === 'join') {
-      div.innerHTML = '<span class="time">' + time + '</span> <b>' + esc(msg.from) + '</b> joined \u2014 ' + esc(msg.body);
+      div.innerHTML = '<span class="time">' + time + '</span> <b style="color:' + sColor + '">' + esc(msg.from) + '</b> joined \u2014 ' + esc(msg.body);
     } else if (msg.event_type === 'leave') {
-      div.innerHTML = '<span class="time">' + time + '</span> <b>' + esc(msg.from) + '</b> left';
+      div.innerHTML = '<span class="time">' + time + '</span> <b style="color:' + sColor + '">' + esc(msg.from) + '</b> left';
     } else {
       var roomBadge = msg.room ? '<span class="room-badge">' + esc(msg.room) + '</span>' : '';
+      var targetInfo = parsed.type === 'dm' ? ' \u2192 ' + esc(parsed.target) : '';
       div.innerHTML = '<div class="meta">'
-        + '<span class="from">' + esc(msg.from) + '</span>'
-        + '<span class="channel">#' + esc(ch) + '</span>'
+        + '<span class="from" style="color:' + sColor + '">' + esc(msg.from) + targetInfo + '</span>'
+        + '<span class="channel">#' + esc(parsed.short) + '</span>'
         + roomBadge
         + '<span class="time">' + time + '</span>'
         + '</div>'
@@ -525,8 +525,9 @@ function renderSwimLane() {
   var subConvGroups = [];
   var currentGroup = null;
   filteredMsgs.forEach(function(msg, i) {
-    if (msg.event_type === 'message' && msg.channel && msg.channel.startsWith('claude:session:')) {
-      var target = msg.channel.replace('claude:session:', '');
+    var slParsed = parseChannel(msg.channel);
+    if (msg.event_type === 'message' && slParsed.type === 'dm') {
+      var target = slParsed.target;
       var pair = [msg.from, target].sort().join('<>');
       if (currentGroup && currentGroup.pair === pair) {
         currentGroup.end = i;
@@ -583,10 +584,10 @@ function renderSwimLane() {
         .attr('text-anchor', 'middle')
         .text(label);
     } else if (msg.event_type === 'message') {
-      var ch = (msg.channel || '').replace('claude:', '');
+      var slP = parseChannel(msg.channel);
       var bodyShort = (msg.body || '').length > 30 ? msg.body.slice(0, 30) + '...' : (msg.body || '');
 
-      if (ch === 'questions') {
+      if (slP.type === 'questions') {
         if (fromIdx < 0) return;
         var fromX = laneX(fromIdx);
         seqSessions.forEach(function(name, j) {
@@ -607,8 +608,8 @@ function renderSwimLane() {
           .attr('x', labelX).attr('y', y - 6)
           .attr('text-anchor', 'middle')
           .text(bodyShort);
-      } else if (ch.startsWith('session:')) {
-        var target = ch.replace('session:', '');
+      } else if (slP.type === 'dm') {
+        var target = slP.target;
         var toIdx = seqSessions.indexOf(target);
         if (fromIdx < 0 || toIdx < 0) return;
         var fromX2 = laneX(fromIdx);
@@ -790,10 +791,10 @@ function renderGitGraph() {
         .attr('fill', color)
         .attr('class', 'gg-node');
 
-      var ch = ev.channel.replace('claude:', '');
-      var isBroadcast = ch === 'questions';
-      var isDM = ch.startsWith('session:');
-      var dmTarget = isDM ? ch.replace('session:', '') : null;
+      var ggP = parseChannel(ev.channel);
+      var isBroadcast = ggP.type === 'questions';
+      var isDM = ggP.type === 'dm';
+      var dmTarget = isDM ? ggP.target : null;
 
       if (isBroadcast) {
         var aliveHere = aliveAtRow[ri];
@@ -888,24 +889,24 @@ function renderThreaded() {
   var i = 0;
   while (i < events.length) {
     var ev = events[i];
-    var ch = (ev.channel || '').replace('claude:', '');
+    var thP = parseChannel(ev.channel);
 
     if (ev.event_type === 'join' || ev.event_type === 'leave') {
       items.push({ type: ev.event_type, msgs: [ev] });
       i++;
-    } else if (ch === 'questions' || ch === 'lobby') {
+    } else if (thP.type === 'questions' || thP.type === 'lobby') {
       items.push({ type: 'broadcast', msgs: [ev] });
       i++;
-    } else if (ch.startsWith('session:')) {
-      var target = ch.replace('session:', '');
+    } else if (thP.type === 'dm') {
+      var target = thP.target;
       var pair = [ev.from, target].sort().join('<>');
       var threadMsgs = [ev];
       var j = i + 1;
       while (j < events.length) {
         var nev = events[j];
-        var nch = (nev.channel || '').replace('claude:', '');
-        if (nev.event_type === 'message' && nch.startsWith('session:')) {
-          var ntarget = nch.replace('session:', '');
+        var nthP = parseChannel(nev.channel);
+        if (nev.event_type === 'message' && nthP.type === 'dm') {
+          var ntarget = nthP.target;
           var npair = [nev.from, ntarget].sort().join('<>');
           if (npair === pair) { threadMsgs.push(nev); j++; continue; }
         }
@@ -937,16 +938,16 @@ function renderThreaded() {
       view.appendChild(div);
     } else if (item.type === 'broadcast') {
       var ev = item.msgs[0];
-      var ch = (ev.channel || '').replace('claude:', '');
+      var thBP = parseChannel(ev.channel);
       var div = document.createElement('div');
       div.className = 'th-item th-broadcast';
-      var badgeClass = ch === 'lobby' ? 'th-badge-lobby' : 'th-badge-questions';
+      var badgeClass = thBP.type === 'lobby' ? 'th-badge-lobby' : 'th-badge-questions';
       var color = thColor(ev.from);
       var time = new Date(ev.timestamp).toLocaleTimeString();
       div.innerHTML = '<div class="th-header">' +
         '<span class="th-dot" style="background:' + color + '"></span>' +
         '<span class="th-sender">' + esc(ev.from) + '</span>' +
-        '<span class="th-badge ' + badgeClass + '">#' + esc(ch) + '</span>' +
+        '<span class="th-badge ' + badgeClass + '">#' + esc(thBP.short) + '</span>' +
         '<span class="th-time">' + time + '</span>' +
         '</div>' +
         '<div class="th-body">' + esc(ev.body) + '</div>';
@@ -998,11 +999,11 @@ function renderThreaded() {
         msgDiv.className = 'th-thread-msg';
         var color = thColor(msg.from);
         var time = new Date(msg.timestamp).toLocaleTimeString();
-        var target = (msg.channel || '').replace('claude:session:', '');
+        var dmP = parseChannel(msg.channel);
         msgDiv.innerHTML = '<div class="th-header">' +
           '<span class="th-dot" style="background:' + color + '; width:8px; height:8px;"></span>' +
           '<span class="th-sender" style="font-size:12px;">' + esc(msg.from) + '</span>' +
-          '<span class="th-badge th-badge-dm">@' + esc(target) + '</span>' +
+          '<span class="th-badge th-badge-dm">@' + esc(dmP.target || '') + '</span>' +
           '<span class="th-time">' + time + '</span>' +
           '</div>' +
           '<div class="th-body">' + esc(msg.body) + '</div>';
@@ -1076,23 +1077,18 @@ function renderGantt() {
     if (m.from && m.from !== 'unknown' && m.from !== '_system' && ganttSessionOrder.indexOf(m.from) === -1) {
       ganttSessionOrder.push(m.from);
     }
-    var ch = m.channel || '';
-    if (ch.startsWith('claude:session:')) {
-      var tgt = ch.replace('claude:session:', '');
-      if (ganttSessionOrder.indexOf(tgt) === -1) ganttSessionOrder.push(tgt);
+    var gp1 = parseChannel(m.channel);
+    if (gp1.type === 'dm' && gp1.target && ganttSessionOrder.indexOf(gp1.target) === -1) {
+      ganttSessionOrder.push(gp1.target);
     }
   });
 
   var timelineEvents = [];
   relevant.forEach(function(m) {
     var t = new Date(m.timestamp);
-    var ch = m.channel || '';
-    var target = null;
-    if (ch.startsWith('claude:session:')) target = ch.replace('claude:session:', '');
-    var isBroadcast = ch === 'claude:questions';
-    var kind = 'lobby';
-    if (isBroadcast) kind = 'broadcast';
-    else if (target) kind = 'dm';
+    var gp2 = parseChannel(m.channel);
+    var target = gp2.type === 'dm' ? gp2.target : null;
+    var kind = gp2.type === 'questions' ? 'broadcast' : (gp2.type === 'dm' ? 'dm' : 'lobby');
 
     timelineEvents.push({
       time: t, type: m.event_type, from: m.from, target: target,
@@ -1266,7 +1262,8 @@ function renderGantt() {
 
 function ganttShowTooltip(event, ev, el) {
   var time = ev.time.toLocaleTimeString();
-  var ch = (ev.channel || '').replace('claude:', '');
+  var gtP = parseChannel(ev.channel);
+  var ch = gtP.short;
   var typeLabel = ev.type;
   if (ev.type === 'join') typeLabel = 'Joined';
   else if (ev.type === 'leave') typeLabel = 'Left';
@@ -1379,6 +1376,34 @@ function esc(s) {
   var d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+// Parse room-scoped channel names to logical type and target
+// claude:room:X:questions → {type:'questions', target:null, short:'questions'}
+// claude:room:X:session:bob → {type:'dm', target:'bob', short:'session:bob'}
+// claude:room:X:lobby → {type:'lobby', target:null, short:'lobby'}
+// Also handles legacy: claude:questions, claude:session:bob, claude:lobby
+function parseChannel(ch) {
+  if (!ch) return {type:'unknown', target:null, short:ch||''};
+  // Room-scoped: claude:room:{room}:{rest}
+  var roomMatch = ch.match(/^claude:room:[^:]+:(.+)$/);
+  var rest = roomMatch ? roomMatch[1] : ch.replace(/^claude:/, '');
+  // session:{name} → DM
+  var sessionMatch = rest.match(/^session:(.+)$/);
+  if (sessionMatch) return {type:'dm', target:sessionMatch[1], short:rest};
+  if (rest === 'questions' || rest.endsWith(':questions')) return {type:'questions', target:null, short:'questions'};
+  if (rest === 'lobby' || rest.endsWith(':lobby')) return {type:'lobby', target:null, short:'lobby'};
+  return {type:'message', target:null, short:rest};
+}
+
+// Per-session color assignment
+var sessionColorMap = {};
+function sessionColor(name) {
+  if (!sessionColorMap[name]) {
+    var idx = Object.keys(sessionColorMap).length;
+    sessionColorMap[name] = colors[idx % colors.length];
+  }
+  return sessionColorMap[name];
 }
 
 // --- Init ---
