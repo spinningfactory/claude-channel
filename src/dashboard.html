@@ -129,6 +129,17 @@
   .gantt-tooltip .gt-time { color: #484f58; font-size: 11px; }
   .gantt-tooltip .gt-body { color: #c9d1d9; margin-top: 4px; word-break: break-word; }
 
+  .date-picker { display: flex; align-items: center; gap: 8px; }
+  .date-picker button { background: none; border: 1px solid #30363d; color: #8b949e; border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 14px; font-family: inherit; }
+  .date-picker button:hover { color: #f0f6fc; border-color: #58a6ff; }
+  .date-picker .date-display { color: #f0f6fc; font-weight: 500; min-width: 100px; text-align: center; }
+
+  .room-select { background: #161b22; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 4px 8px; font-size: 13px; font-family: inherit; }
+
+  .room-count { font-size: 12px; color: #8b949e; }
+
+  .chat-msg .room-badge { background: #21262d; color: #8b949e; font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-left: 4px; }
+
   @media (max-width: 900px) {
     .container { grid-template-columns: 1fr; }
   }
@@ -140,6 +151,15 @@
     <h1>Claude Channel Dashboard</h1>
     <span class="status"><span class="dot" id="status-dot"></span><span id="status-text">Connecting...</span></span>
     <span class="status" id="session-count"></span>
+    <div class="date-picker">
+      <button id="date-prev">&lt;</button>
+      <span class="date-display" id="date-display">--</span>
+      <button id="date-next">&gt;</button>
+    </div>
+    <select class="room-select" id="room-select">
+      <option value="">All Rooms</option>
+    </select>
+    <span class="room-count" id="room-count"></span>
   </div>
 
   <div class="panel" id="graph-panel">
@@ -211,6 +231,12 @@ var sessions = new Map();
 var messages = [];
 var edges = new Map();
 
+// --- Date / Room State ---
+var availableDates = [];
+var currentDateIndex = -1;
+var currentRooms = [];
+var currentRoom = '';  // '' means All Rooms
+
 // --- Tab / View State ---
 var activeView = localStorage.getItem('dashboardView') || 'threaded';
 var viewInited = { swimlane: false, gitgraph: false, threaded: false, gantt: false };
@@ -235,8 +261,15 @@ document.querySelectorAll('.tab-btn').forEach(function(btn) {
 
 // --- SSE Connection ---
 var evtSource;
-function connect() {
-  evtSource = new EventSource('/events');
+function connect(roomId) {
+  if (evtSource) {
+    evtSource.close();
+  }
+  var url = '/events';
+  if (roomId) {
+    url = '/events?room=' + encodeURIComponent(roomId);
+  }
+  evtSource = new EventSource(url);
   evtSource.onopen = function() {
     document.getElementById('status-dot').className = 'dot connected';
     document.getElementById('status-text').textContent = 'Connected';
@@ -250,6 +283,88 @@ function connect() {
     handleEvent(event);
   };
 }
+
+function resetState() {
+  messages = [];
+  sessions.clear();
+  edges.clear();
+  ggColumns = [];
+  ggDeadSessions.clear();
+  ganttSessionOrder = [];
+  ganttInited = false;
+  thSessionColors.clear();
+  thColorIdx = 0;
+  thCollapsed.clear();
+  renderChat();
+  renderSessions();
+  renderSequence();
+  updateGraph();
+}
+
+// --- Date Navigation ---
+function fetchDates() {
+  return fetch('/api/dates')
+    .then(function(r) { return r.json(); })
+    .then(function(dates) {
+      availableDates = dates;
+      return dates;
+    });
+}
+
+function fetchRoomsForDate(date) {
+  var url = date ? '/api/rooms?date=' + encodeURIComponent(date) : '/api/rooms';
+  return fetch(url)
+    .then(function(r) { return r.json(); })
+    .then(function(rooms) {
+      currentRooms = rooms;
+      populateRoomDropdown(rooms);
+      return rooms;
+    });
+}
+
+function populateRoomDropdown(rooms) {
+  var sel = document.getElementById('room-select');
+  sel.innerHTML = '<option value="">All Rooms</option>';
+  rooms.forEach(function(room) {
+    var opt = document.createElement('option');
+    opt.value = room.id;
+    opt.textContent = room.id;
+    sel.appendChild(opt);
+  });
+  sel.value = '';
+  document.getElementById('room-count').textContent = rooms.length + ' room' + (rooms.length !== 1 ? 's' : '');
+}
+
+function updateDateDisplay() {
+  var display = document.getElementById('date-display');
+  if (currentDateIndex >= 0 && currentDateIndex < availableDates.length) {
+    display.textContent = availableDates[currentDateIndex];
+  } else {
+    display.textContent = '--';
+  }
+}
+
+function navigateDate(delta) {
+  var newIndex = currentDateIndex + delta;
+  if (newIndex < 0 || newIndex >= availableDates.length) return;
+  currentDateIndex = newIndex;
+  updateDateDisplay();
+  var date = availableDates[currentDateIndex];
+  fetchRoomsForDate(date).then(function() {
+    currentRoom = '';
+    resetState();
+    connect('');
+  });
+}
+
+document.getElementById('date-prev').addEventListener('click', function() { navigateDate(-1); });
+document.getElementById('date-next').addEventListener('click', function() { navigateDate(1); });
+
+document.getElementById('room-select').addEventListener('change', function() {
+  currentRoom = this.value;
+  resetState();
+  connect(currentRoom);
+});
 
 function handleEvent(event) {
   if (event.event_type === 'sessions') {
@@ -324,9 +439,11 @@ function renderChat() {
     } else if (msg.event_type === 'leave') {
       div.innerHTML = '<span class="time">' + time + '</span> <b>' + esc(msg.from) + '</b> left';
     } else {
+      var roomBadge = msg.room ? '<span class="room-badge">' + esc(msg.room) + '</span>' : '';
       div.innerHTML = '<div class="meta">'
         + '<span class="from">' + esc(msg.from) + '</span>'
         + '<span class="channel">#' + esc(ch) + '</span>'
+        + roomBadge
         + '<span class="time">' + time + '</span>'
         + '</div>'
         + '<div class="body">' + esc(msg.body) + '</div>';
@@ -1267,7 +1384,23 @@ function esc(s) {
 // --- Init ---
 initGraph();
 switchView(activeView);
-connect();
+
+// Fetch dates, default to today (last date), fetch rooms, then connect SSE
+fetchDates().then(function(dates) {
+  if (dates.length > 0) {
+    currentDateIndex = dates.length - 1;
+    updateDateDisplay();
+    return fetchRoomsForDate(dates[currentDateIndex]);
+  } else {
+    updateDateDisplay();
+    return fetchRoomsForDate(null);
+  }
+}).then(function() {
+  connect('');
+}).catch(function() {
+  // If API not available, just connect SSE directly
+  connect('');
+});
 </script>
 </body>
 </html>

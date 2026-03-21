@@ -27,10 +27,13 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "redis")]
     let coordinator = if let Some(ref coord_config) = config.coordination {
         eprintln!("[channel] Coordination enabled: {}", coord_config.goal);
+        let room = coord_config.room_id().to_string();
+        eprintln!("[channel] Room: {}", room);
         let coordinator = coordination::Coordinator::new(
             server_name.clone(),
             coord_config.goal.clone(),
             coord_config.url.clone(),
+            room.clone(),
         )?;
         coordinator.register().await?;
 
@@ -40,6 +43,7 @@ async fn main() -> anyhow::Result<()> {
             server_name.clone(),
             coord_config.goal.clone(),
             coord_config.url.clone(),
+            room,
         )?;
         tokio::spawn(async move {
             if let Err(e) = coord_sub.subscribe(coord_tx).await {

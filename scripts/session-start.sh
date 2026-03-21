@@ -5,26 +5,37 @@
 # and exposes publish/list_sessions MCP tools — no hook scripts needed.
 #
 # Usage:
-#   ./scripts/session-start.sh <session-name> <goal> [project-dir]
+#   ./scripts/session-start.sh <session-name> <goal> [project-dir] [--room room-name]
 #
 # Examples:
 #   ./scripts/session-start.sh auth-refactor "refactoring auth middleware" ~/myproject
-#   ./scripts/session-start.sh frontend "building the new dashboard" .
+#   ./scripts/session-start.sh frontend "building the dashboard" . --room morning-standup
 
 set -euo pipefail
 
 if [ $# -lt 2 ]; then
-    echo "Usage: $0 <session-name> <goal> [project-dir]"
+    echo "Usage: $0 <session-name> <goal> [project-dir] [--room room-name]"
     echo ""
     echo "  session-name  Short identifier (e.g. auth-refactor, frontend, api-tests)"
     echo "  goal          What this session is working on"
     echo "  project-dir   Working directory (default: current dir)"
+    echo "  --room        Join a specific room (default: 'default')"
     exit 1
 fi
 
 SESSION_NAME="$1"
 SESSION_GOAL="$2"
 PROJECT_DIR="${3:-.}"
+ROOM=""
+
+# Parse --room flag
+shift 2
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --room) ROOM="$2"; shift 2 ;;
+        *) PROJECT_DIR="$1"; shift ;;
+    esac
+done
 REDIS_PORT="${REDIS_PORT:-16379}"
 CHANNEL_BINARY="${CHANNEL_BINARY:-$(dirname "$0")/../target/release/claude-channel}"
 
@@ -45,6 +56,7 @@ server_name: "$SESSION_NAME"
 coordination:
   url: "redis://localhost:$REDIS_PORT"
   goal: "$SESSION_GOAL"
+${ROOM:+  room: \"$ROOM\"}
 
 sources:
   - type: webhook

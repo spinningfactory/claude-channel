@@ -34,6 +34,14 @@ pub struct Config {
 pub struct CoordinationConfig {
     pub url: String,
     pub goal: String,
+    pub room: Option<String>,
+}
+
+#[cfg(feature = "redis")]
+impl CoordinationConfig {
+    pub fn room_id(&self) -> &str {
+        self.room.as_deref().unwrap_or("default")
+    }
 }
 
 #[derive(Debug, Deserialize)]

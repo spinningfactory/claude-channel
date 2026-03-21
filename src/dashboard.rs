@@ -11,6 +11,8 @@ struct Event {
     from: String,
     body: String,
     event_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    room: Option<String>,
 }
 
 #[tokio::main]
@@ -52,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
                     from: "_system".to_string(),
                     body: serde_json::to_string(&sessions).unwrap_or_default(),
                     event_type: "sessions".to_string(),
+                    room: None,
                 };
                 let _ = tx_sessions.send(event);
             }
@@ -75,8 +78,12 @@ async fn main() -> anyhow::Result<()> {
                 .and_then(|l| l.split_whitespace().nth(1))
                 .unwrap_or("/");
 
-            match path {
+            let (base_path, query_params) = parse_path_and_query(path);
+
+            match base_path {
                 "/events" => {
+                    let room_filter = query_params.get("room").cloned();
+
                     // SSE stream
                     let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: keep-alive\r\n\r\n";
                     if stream.write_all(headers.as_bytes()).await.is_err() { return; }
@@ -84,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
                     // Replay history from Redis stream
                     let redis_url = std::env::var("REDIS_URL")
                         .unwrap_or_else(|_| "redis://localhost:16379".to_string());
-                    if let Ok(history) = replay_history(&redis_url).await {
+                    if let Ok(history) = replay_history(&redis_url, room_filter.as_deref()).await {
                         for event in history {
                             let data = serde_json::to_string(&event).unwrap_or_default();
                             let msg = format!("data: {}\n\n", data);
@@ -92,14 +99,75 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
 
-                    // Then stream live events
+                    // Then stream live events, filtering by room if specified
                     let mut rx = tx.subscribe();
                     while let Ok(event) = rx.recv().await {
+                        if let Some(ref room) = room_filter {
+                            // Filter by room: check event.room field or parse from channel name
+                            let event_room = event.room.as_deref()
+                                .or_else(|| extract_room_from_channel(&event.channel));
+                            if event_room != Some(room.as_str()) {
+                                continue;
+                            }
+                        }
                         let data = serde_json::to_string(&event).unwrap_or_default();
                         let msg = format!("data: {}\n\n", data);
                         if stream.write_all(msg.as_bytes()).await.is_err() { break; }
                     }
                 }
+
+                "/api/rooms" => {
+                    let redis_url = std::env::var("REDIS_URL")
+                        .unwrap_or_else(|_| "redis://localhost:16379".to_string());
+
+                    let result = if let Some(date) = query_params.get("date") {
+                        get_rooms_by_date(&redis_url, date)
+                    } else {
+                        get_all_rooms(&redis_url)
+                    };
+
+                    match result {
+                        Ok(json_str) => {
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
+                                json_str.len(), json_str
+                            );
+                            let _ = stream.write_all(response.as_bytes()).await;
+                        }
+                        Err(e) => {
+                            let err_json = serde_json::json!({"error": e.to_string()}).to_string();
+                            let response = format!(
+                                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                err_json.len(), err_json
+                            );
+                            let _ = stream.write_all(response.as_bytes()).await;
+                        }
+                    }
+                }
+
+                "/api/dates" => {
+                    let redis_url = std::env::var("REDIS_URL")
+                        .unwrap_or_else(|_| "redis://localhost:16379".to_string());
+
+                    match get_room_dates(&redis_url) {
+                        Ok(json_str) => {
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
+                                json_str.len(), json_str
+                            );
+                            let _ = stream.write_all(response.as_bytes()).await;
+                        }
+                        Err(e) => {
+                            let err_json = serde_json::json!({"error": e.to_string()}).to_string();
+                            let response = format!(
+                                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                err_json.len(), err_json
+                            );
+                            let _ = stream.write_all(response.as_bytes()).await;
+                        }
+                    }
+                }
+
                 _ => {
                     // Serve the dashboard HTML
                     let html = include_str!("dashboard.html");
@@ -111,6 +179,32 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         });
+    }
+}
+
+/// Parse a request path into base path and query parameters.
+fn parse_path_and_query(path: &str) -> (&str, std::collections::HashMap<String, String>) {
+    let mut params = std::collections::HashMap::new();
+    if let Some((base, query)) = path.split_once('?') {
+        for pair in query.split('&') {
+            if let Some((k, v)) = pair.split_once('=') {
+                params.insert(k.to_string(), v.to_string());
+            }
+        }
+        (base, params)
+    } else {
+        (path, params)
+    }
+}
+
+/// Extract room ID from a channel name like "claude:room:morning-standup:questions" -> "morning-standup"
+fn extract_room_from_channel(channel: &str) -> Option<&str> {
+    if channel.starts_with("claude:room:") {
+        let rest = &channel["claude:room:".len()..];
+        // Room ID is everything up to the next colon
+        rest.split(':').next()
+    } else {
+        None
     }
 }
 
@@ -147,12 +241,16 @@ async fn subscribe_redis(url: &str, tx: &broadcast::Sender<Event>) -> anyhow::Re
             ("unknown".to_string(), payload.clone(), "message".to_string())
         };
 
+        // Extract room from channel name
+        let room = extract_room_from_channel(&channel).map(String::from);
+
         let event = Event {
             timestamp: chrono::Utc::now().to_rfc3339(),
             channel,
             from,
             body,
             event_type,
+            room,
         };
 
         let _ = tx.send(event);
@@ -176,13 +274,92 @@ fn get_sessions(url: &str) -> anyhow::Result<Vec<(String, serde_json::Value)>> {
     Ok(sessions)
 }
 
-async fn replay_history(url: &str) -> anyhow::Result<Vec<Event>> {
+fn get_all_rooms(url: &str) -> anyhow::Result<String> {
+    let client = redis::Client::open(url)?;
+    let mut con = client.get_connection()?;
+    let raw: Vec<(String, String)> = redis::cmd("HGETALL")
+        .arg("claude:rooms")
+        .query(&mut con)?;
+
+    let rooms: Vec<serde_json::Value> = raw.into_iter()
+        .map(|(id, data)| {
+            let meta = serde_json::from_str::<serde_json::Value>(&data)
+                .unwrap_or(serde_json::json!({}));
+            serde_json::json!({
+                "id": id,
+                "meta": meta,
+            })
+        })
+        .collect();
+
+    Ok(serde_json::to_string(&rooms)?)
+}
+
+fn get_rooms_by_date(url: &str, date: &str) -> anyhow::Result<String> {
+    let client = redis::Client::open(url)?;
+    let mut con = client.get_connection()?;
+
+    // Get room IDs for this date
+    let room_ids: Vec<String> = redis::cmd("SMEMBERS")
+        .arg(format!("claude:rooms:by_date:{}", date))
+        .query(&mut con)?;
+
+    if room_ids.is_empty() {
+        return Ok("[]".to_string());
+    }
+
+    // Get metadata for each room from the rooms hash
+    let mut rooms = Vec::new();
+    for room_id in &room_ids {
+        let data: Option<String> = redis::cmd("HGET")
+            .arg("claude:rooms")
+            .arg(room_id)
+            .query(&mut con)?;
+
+        let meta = data
+            .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
+            .unwrap_or(serde_json::json!({}));
+
+        rooms.push(serde_json::json!({
+            "id": room_id,
+            "meta": meta,
+        }));
+    }
+
+    Ok(serde_json::to_string(&rooms)?)
+}
+
+fn get_room_dates(url: &str) -> anyhow::Result<String> {
+    let client = redis::Client::open(url)?;
+    let mut con = client.get_connection()?;
+
+    let keys: Vec<String> = redis::cmd("KEYS")
+        .arg("claude:rooms:by_date:*")
+        .query(&mut con)?;
+
+    let prefix = "claude:rooms:by_date:";
+    let mut dates: Vec<String> = keys.into_iter()
+        .filter_map(|k| k.strip_prefix(prefix).map(String::from))
+        .collect();
+
+    dates.sort();
+
+    Ok(serde_json::to_string(&dates)?)
+}
+
+async fn replay_history(url: &str, room: Option<&str>) -> anyhow::Result<Vec<Event>> {
     let client = redis::Client::open(url)?;
     let mut con = client.get_multiplexed_async_connection().await?;
 
-    // XRANGE claude:stream - + returns all entries
+    // Use room-scoped stream if room specified, otherwise global stream
+    let stream_key = match room {
+        Some(r) => format!("claude:room:{}:stream", r),
+        None => "claude:stream".to_string(),
+    };
+
+    // XRANGE returns all entries
     let result: Vec<redis::Value> = redis::cmd("XRANGE")
-        .arg("claude:stream")
+        .arg(&stream_key)
         .arg("-")
         .arg("+")
         .query_async(&mut con)
@@ -203,6 +380,7 @@ async fn replay_history(url: &str) -> anyhow::Result<Vec<Event>> {
             // Extract field pairs
             let mut channel = String::new();
             let mut payload = String::new();
+            let mut event_room = None;
 
             if let redis::Value::Array(ref pairs) = fields[1] {
                 let mut i = 0;
@@ -218,6 +396,7 @@ async fn replay_history(url: &str) -> anyhow::Result<Vec<Event>> {
                     match key.as_str() {
                         "channel" => channel = val,
                         "payload" => payload = val,
+                        "room" => event_room = Some(val),
                         _ => {}
                     }
                     i += 2;
@@ -253,17 +432,21 @@ async fn replay_history(url: &str) -> anyhow::Result<Vec<Event>> {
                 ("unknown".to_string(), payload.clone(), "message".to_string())
             };
 
+            // If no room field in stream data, try to extract from channel name
+            let room_val = event_room.or_else(|| extract_room_from_channel(&channel).map(String::from));
+
             events.push(Event {
                 timestamp,
                 channel,
                 from,
                 body,
                 event_type,
+                room: room_val,
             });
         }
     }
 
-    eprintln!("[dashboard] Replayed {} events from stream", events.len());
+    eprintln!("[dashboard] Replayed {} events from {}", events.len(), stream_key);
     Ok(events)
 }
 
