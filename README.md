@@ -1,4 +1,4 @@
-# claude-channel
+ claude-channel
 
 A configurable MCP channel server for [Claude Code](https://claude.ai/code). Aggregates events from multiple sources and pushes them into a running Claude Code session as channel notifications.
 
@@ -111,6 +111,45 @@ mise run test-all   # Full integration test (all sources with containers)
 mise run up         # Start test infrastructure
 mise run down       # Stop test infrastructure
 mise run clean      # Stop infrastructure + cargo clean
+
+# Multi-session coordination
+mise run session -- <name> <goal> [project-dir]
+mise run sessions   # List active sessions
+```
+
+### Multi-session coordination
+
+Run multiple Claude Code sessions that can discover each other and communicate
+via Redis pub/sub. Each session registers its goal, and only responds to messages
+that are directly relevant to its work.
+
+```bash
+# Start infrastructure (Redis required)
+mise run up
+
+# Launch sessions (each in its own terminal)
+mise run session -- auth-refactor "refactoring auth middleware" ~/myproject
+mise run session -- frontend "building the new dashboard" ~/myproject
+mise run session -- api-tests "writing integration tests for the API" ~/myproject
+
+# Check who's online
+mise run sessions
+```
+
+The channel binary handles everything automatically:
+- **Registration** in Redis on startup, deregistration on exit
+- **Subscribes** to `claude:lobby`, `claude:questions`, and `claude:session:<name>`
+- **Exposes MCP tools**: `publish` (send messages) and `list_sessions` (see who's online)
+
+Sessions are instructed to **only respond when they have direct, concrete knowledge**
+relevant to the question. They won't butt in with unsolicited advice.
+
+Add coordination to any config with:
+
+```yaml
+coordination:
+  url: "redis://localhost:16379"
+  goal: "what this session is working on"
 ```
 
 ### Project structure
@@ -130,6 +169,9 @@ src/
 examples/
   webhook.yaml         Minimal webhook-only config
   all-sources.yaml     Config with all 5 source types
+scripts/
+  session-start.sh     Launch a coordinated Claude Code session
+  session-list.sh      List active sessions
 .devcontainer/         Docker Compose services for testing
 ```
 

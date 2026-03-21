@@ -181,9 +181,31 @@ else
 fi
 """
 
+[tasks.session]
+description = "Launch a Claude Code session with multi-session coordination"
+depends = ["build", "up"]
+usage = "session <name> <goal> [project-dir]"
+run = """
+#!/usr/bin/env bash
+if [ $# -lt 2 ]; then
+    echo "Usage: mise run session -- <name> <goal> [project-dir]"
+    echo ""
+    echo "Examples:"
+    echo '  mise run session -- auth-refactor "refactoring auth middleware" ~/myproject'
+    echo '  mise run session -- frontend "building the dashboard" .'
+    exit 1
+fi
+./scripts/session-start.sh "$@"
+"""
+
+[tasks.sessions]
+description = "List active Claude Code sessions"
+run = "./scripts/session-list.sh"
+
 [tasks.clean]
 description = "Stop infrastructure and clean build artifacts"
 run = """
 docker compose -f .devcontainer/docker-compose.yml down 2>/dev/null || true
 cargo clean
+rm -rf /tmp/claude-sessions
 """

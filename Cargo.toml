@@ -7,7 +7,7 @@ edition = "2021"
 default = ["webhook"]
 webhook = []
 sqs = ["dep:aws-sdk-sqs", "dep:aws-config"]
-redis = ["dep:redis", "dep:futures"]
+redis = ["dep:redis", "dep:futures", "dep:chrono"]
 postgres = ["dep:tokio-postgres", "dep:futures"]
 nats = ["dep:async-nats", "dep:futures"]
 
@@ -25,4 +25,5 @@ aws-config = { version = "1", optional = true }
 redis = { version = "0.27", features = ["tokio-comp", "aio"], optional = true }
 tokio-postgres = { version = "0.7", optional = true }
 futures = { version = "0.3", optional = true }
+chrono = { version = "0.4", optional = true }
 async-nats = { version = "0.38", optional = true }
