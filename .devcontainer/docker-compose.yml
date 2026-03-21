@@ -1,0 +1,37 @@
+services:
+  dev:
+    image: mcr.microsoft.com/devcontainers/rust:1
+    volumes:
+      - ..:/workspace:cached
+    command: sleep infinity
+    depends_on:
+      - redis
+      - postgres
+      - localstack
+    environment:
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "15432:5432"
+    environment:
+      POSTGRES_USER: channel
+      POSTGRES_PASSWORD: channel
+      POSTGRES_DB: channel
+
+  localstack:
+    image: localstack/localstack:3
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: sqs
+      DEFAULT_REGION: us-east-1

@@ -1,0 +1,7 @@
+server_name: "claude-channel"
+instructions: "Events from external sources arrive as <channel source=\"claude-channel\" ...>. Each event includes a 'source' meta field indicating its origin (webhook, sqs, redis, postgres)."
+
+sources:
+  - type: webhook
+    port: 8788
+    bind: "127.0.0.1"

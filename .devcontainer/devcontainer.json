@@ -1,0 +1,19 @@
+{
+  "name": "claude-channel",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "dev",
+  "workspaceFolder": "/workspace",
+  "forwardPorts": [8788],
+  "customizations": {
+    "vscode": {
+      "extensions": ["rust-lang.rust-analyzer"]
+    }
+  },
+  "postCreateCommand": "sudo apt-get update -qq && sudo apt-get install -y -qq redis-tools postgresql-client > /dev/null 2>&1; curl -LsSf https://astral.sh/uv/install.sh | sh; curl https://mise.run | sh; cargo build --all-features",
+  "remoteEnv": {
+    "AWS_ENDPOINT_URL": "http://localstack:4566",
+    "AWS_ACCESS_KEY_ID": "test",
+    "AWS_SECRET_ACCESS_KEY": "test",
+    "AWS_DEFAULT_REGION": "us-east-1"
+  }
+}

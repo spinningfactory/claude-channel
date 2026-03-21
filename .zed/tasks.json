@@ -1,0 +1,56 @@
+[
+  {
+    "label": "Build (all features)",
+    "command": "cargo",
+    "args": ["build", "--all-features"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always",
+    "save": "all"
+  },
+  {
+    "label": "Build (webhook only)",
+    "command": "cargo",
+    "args": ["build"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always",
+    "save": "all"
+  },
+  {
+    "label": "Build release",
+    "command": "cargo",
+    "args": ["build", "--release", "--all-features"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always",
+    "save": "all"
+  },
+  {
+    "label": "Test (webhook)",
+    "command": "bash",
+    "args": ["test.sh"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always"
+  },
+  {
+    "label": "Test (all sources, devcontainer)",
+    "command": "bash",
+    "args": [".devcontainer/test-all-sources.sh"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always"
+  },
+  {
+    "label": "Clippy",
+    "command": "cargo",
+    "args": ["clippy", "--all-features", "--", "-W", "clippy::all"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always",
+    "save": "all"
+  },
+  {
+    "label": "Run (webhook config)",
+    "command": "cargo",
+    "args": ["run", "--all-features", "--", "config.yaml"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always",
+    "save": "all"
+  }
+]

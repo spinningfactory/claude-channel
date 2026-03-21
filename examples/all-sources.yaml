@@ -1,0 +1,22 @@
+server_name: "my-channel"
+instructions: "Events from external sources arrive as <channel source=\"my-channel\" ...>. Each event includes a 'source' meta field (webhook, sqs, redis, postgres)."
+
+sources:
+  - type: webhook
+    port: 8788
+    bind: "127.0.0.1"
+
+  - type: sqs
+    queue_url: "https://sqs.us-east-1.amazonaws.com/123456789/my-queue"
+    region: "us-east-1"
+    wait_seconds: 20
+    max_messages: 10
+
+  - type: redis
+    url: "redis://127.0.0.1:6379"
+    mode: pubsub                    # "pubsub" or "brpop"
+    channels: ["events", "alerts"]
+
+  - type: postgres
+    connection: "host=localhost user=app password=secret dbname=mydb"
+    channels: ["events", "deploy_notifications"]
