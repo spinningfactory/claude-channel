@@ -50,14 +50,18 @@
   .session-card .goal { color: #8b949e; font-size: 12px; margin-top: 2px; }
   .session-card .started { color: #484f58; font-size: 11px; margin-top: 4px; }
 
-  /* Sequence diagram */
+  /* Sequence swim-lane diagram */
   #sequence-panel { }
-  #sequence-view { flex: 1; overflow-y: auto; padding: 8px; font-family: monospace; font-size: 12px; }
-  .seq-line { padding: 2px 0; white-space: nowrap; }
-  .seq-arrow { color: #58a6ff; }
-  .seq-from { color: #f0883e; }
-  .seq-to { color: #a5d6ff; }
-  .seq-body { color: #8b949e; }
+  #sequence-view { flex: 1; overflow: auto; }
+  #sequence-svg { display: block; }
+  .lane-header { fill: #f0f6fc; font-size: 12px; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; text-anchor: middle; }
+  .lane-line { stroke: #30363d; stroke-width: 1; stroke-dasharray: 4 3; }
+  .arrow-questions { stroke: #58a6ff; stroke-width: 1.5; fill: none; }
+  .arrow-dm { stroke: #f0883e; stroke-width: 1.5; fill: none; }
+  .arrow-lobby { stroke: #3fb950; stroke-width: 1; stroke-dasharray: 5 3; fill: none; }
+  .arrow-label { font-size: 10px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill: #8b949e; pointer-events: none; }
+  .lobby-label { font-size: 10px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill: #3fb950; }
+  .sub-conv-box { fill: rgba(240, 136, 62, 0.06); stroke: rgba(240, 136, 62, 0.2); stroke-width: 1; }
 
   @media (max-width: 900px) {
     .container { grid-template-columns: 1fr; }
@@ -89,7 +93,18 @@
 
   <div class="panel" id="sequence-panel">
     <div class="panel-header">Sequence</div>
-    <div id="sequence-view"></div>
+    <div id="sequence-view">
+      <svg id="sequence-svg">
+        <defs>
+          <marker id="arrowBlue" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#58a6ff"/>
+          </marker>
+          <marker id="arrowOrange" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#f0883e"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
   </div>
 </div>
 
@@ -208,30 +223,180 @@ function renderChat() {
   el.scrollTop = el.scrollHeight;
 }
 
-// --- Sequence Diagram ---
+// --- Sequence Diagram (SVG Swim Lane) ---
 function renderSequence() {
-  const el = document.getElementById('sequence-view');
-  const last20 = messages.filter(m => m.event_type === 'message' || m.event_type === 'join' || m.event_type === 'leave').slice(-30);
-  el.innerHTML = '';
-  last20.forEach(msg => {
-    const div = document.createElement('div');
-    div.className = 'seq-line';
-    const ch = msg.channel.replace('claude:', '');
-    const time = new Date(msg.timestamp).toLocaleTimeString();
+  const wrapper = document.getElementById('sequence-view');
+  const svg = d3.select('#sequence-svg');
 
-    if (msg.event_type === 'join') {
-      div.innerHTML = `<span class="seq-body">${time}</span> <span class="seq-from">${esc(msg.from)}</span> <span class="seq-arrow">──▶ joined</span>`;
-    } else if (msg.event_type === 'leave') {
-      div.innerHTML = `<span class="seq-body">${time}</span> <span class="seq-from">${esc(msg.from)}</span> <span class="seq-arrow">──▶ left</span>`;
-    } else {
-      let target = ch;
-      if (ch.startsWith('session:')) target = ch.replace('session:', '');
-      const bodyShort = msg.body.length > 50 ? msg.body.slice(0, 50) + '...' : msg.body;
-      div.innerHTML = `<span class="seq-body">${time}</span> <span class="seq-from">${esc(msg.from)}</span> <span class="seq-arrow">──▶</span> <span class="seq-to">${esc(target)}</span> <span class="seq-body">${esc(bodyShort)}</span>`;
-    }
-    el.appendChild(div);
+  // Collect all known session names for lanes
+  const seqSessions = [];
+  const seqSessionSet = new Set();
+  sessions.forEach((_, name) => {
+    if (!seqSessionSet.has(name)) { seqSessions.push(name); seqSessionSet.add(name); }
   });
-  el.scrollTop = el.scrollHeight;
+  messages.forEach(m => {
+    if (m.from && m.from !== 'unknown' && m.from !== '_system' && !seqSessionSet.has(m.from)) {
+      seqSessions.push(m.from); seqSessionSet.add(m.from);
+    }
+  });
+
+  if (seqSessions.length === 0) {
+    svg.attr('width', 0).attr('height', 0);
+    return;
+  }
+
+  const laneWidth = 140;
+  const laneMargin = 60;
+  const headerY = 25;
+  const startY = 50;
+  const rowHeight = 40;
+
+  const filteredMsgs = messages.filter(m =>
+    m.event_type === 'message' || m.event_type === 'join' || m.event_type === 'leave'
+  ).slice(-40);
+
+  const totalWidth = Math.max(laneMargin + seqSessions.length * laneWidth, 300);
+  const totalHeight = startY + filteredMsgs.length * rowHeight + 40;
+
+  svg.attr('width', totalWidth).attr('height', totalHeight);
+
+  // Clear previous content (keep defs)
+  svg.selectAll('g.seq-content').remove();
+  const g = svg.append('g').attr('class', 'seq-content');
+
+  const laneX = (idx) => laneMargin + idx * laneWidth + laneWidth / 2;
+
+  // Draw lane headers and lifelines
+  seqSessions.forEach((name, i) => {
+    const x = laneX(i);
+    g.append('rect')
+      .attr('x', x - 42).attr('y', 6).attr('width', 84).attr('height', 22)
+      .attr('rx', 4).attr('fill', '#161b22').attr('stroke', '#30363d').attr('stroke-width', 1);
+    g.append('text')
+      .attr('class', 'lane-header')
+      .attr('x', x).attr('y', headerY - 4)
+      .text(name);
+    g.append('line')
+      .attr('class', 'lane-line')
+      .attr('x1', x).attr('y1', startY - 8)
+      .attr('x2', x).attr('y2', totalHeight - 10);
+  });
+
+  // Detect sub-conversations (consecutive DMs between same pair)
+  const subConvGroups = [];
+  let currentGroup = null;
+  filteredMsgs.forEach((msg, i) => {
+    if (msg.event_type === 'message' && msg.channel && msg.channel.startsWith('claude:session:')) {
+      const target = msg.channel.replace('claude:session:', '');
+      const pair = [msg.from, target].sort().join('<>');
+      if (currentGroup && currentGroup.pair === pair) {
+        currentGroup.end = i;
+      } else {
+        if (currentGroup && currentGroup.end > currentGroup.start) {
+          subConvGroups.push(currentGroup);
+        }
+        currentGroup = { pair, start: i, end: i };
+      }
+    } else {
+      if (currentGroup && currentGroup.end > currentGroup.start) {
+        subConvGroups.push(currentGroup);
+      }
+      currentGroup = null;
+    }
+  });
+  if (currentGroup && currentGroup.end > currentGroup.start) {
+    subConvGroups.push(currentGroup);
+  }
+
+  // Draw sub-conversation shaded boxes
+  subConvGroups.forEach(grp => {
+    const names = grp.pair.split('<>');
+    const idx0 = seqSessions.indexOf(names[0]);
+    const idx1 = seqSessions.indexOf(names[1]);
+    if (idx0 < 0 || idx1 < 0) return;
+    const minIdx = Math.min(idx0, idx1);
+    const maxIdx = Math.max(idx0, idx1);
+    const x1 = laneX(minIdx) - 35;
+    const x2 = laneX(maxIdx) + 35;
+    const y1 = startY + grp.start * rowHeight - 8;
+    const y2 = startY + grp.end * rowHeight + 22;
+    g.append('rect')
+      .attr('class', 'sub-conv-box')
+      .attr('x', x1).attr('y', y1)
+      .attr('width', x2 - x1).attr('height', y2 - y1)
+      .attr('rx', 4).attr('ry', 4);
+  });
+
+  // Draw message arrows
+  filteredMsgs.forEach((msg, i) => {
+    const y = startY + i * rowHeight + 10;
+    const fromIdx = seqSessions.indexOf(msg.from);
+
+    if (msg.event_type === 'join' || msg.event_type === 'leave') {
+      // Lobby: green dashed line spanning all lanes
+      const xStart = laneX(0) - 25;
+      const xEnd = laneX(seqSessions.length - 1) + 25;
+      g.append('line')
+        .attr('class', 'arrow-lobby')
+        .attr('x1', xStart).attr('y1', y)
+        .attr('x2', xEnd).attr('y2', y);
+      const label = msg.event_type === 'join' ? `${msg.from} joined` : `${msg.from} left`;
+      g.append('text')
+        .attr('class', 'lobby-label')
+        .attr('x', (xStart + xEnd) / 2).attr('y', y - 6)
+        .attr('text-anchor', 'middle')
+        .text(label);
+    } else if (msg.event_type === 'message') {
+      const ch = (msg.channel || '').replace('claude:', '');
+      const bodyShort = (msg.body || '').length > 30 ? msg.body.slice(0, 30) + '...' : (msg.body || '');
+
+      if (ch === 'questions') {
+        // Broadcast: arrows from sender to every other lane
+        if (fromIdx < 0) return;
+        const fromX = laneX(fromIdx);
+        seqSessions.forEach((name, j) => {
+          if (j === fromIdx) return;
+          const toX = laneX(j);
+          const dir = toX > fromX ? 1 : -1;
+          g.append('line')
+            .attr('class', 'arrow-questions')
+            .attr('x1', fromX + dir * 8).attr('y1', y)
+            .attr('x2', toX - dir * 8).attr('y2', y)
+            .attr('marker-end', 'url(#arrowBlue)');
+        });
+        // Label above arrows
+        const labelX = fromIdx === 0
+          ? fromX + (laneX(1) - fromX) / 2
+          : fromX - (fromX - laneX(fromIdx - 1)) / 2;
+        g.append('text')
+          .attr('class', 'arrow-label')
+          .attr('x', labelX).attr('y', y - 6)
+          .attr('text-anchor', 'middle')
+          .text(bodyShort);
+      } else if (ch.startsWith('session:')) {
+        // DM: single arrow from sender to target
+        const target = ch.replace('session:', '');
+        const toIdx = seqSessions.indexOf(target);
+        if (fromIdx < 0 || toIdx < 0) return;
+        const fromX = laneX(fromIdx);
+        const toX = laneX(toIdx);
+        const dir = toX > fromX ? 1 : -1;
+        g.append('line')
+          .attr('class', 'arrow-dm')
+          .attr('x1', fromX + dir * 8).attr('y1', y)
+          .attr('x2', toX - dir * 8).attr('y2', y)
+          .attr('marker-end', 'url(#arrowOrange)');
+        g.append('text')
+          .attr('class', 'arrow-label')
+          .attr('x', (fromX + toX) / 2).attr('y', y - 6)
+          .attr('text-anchor', 'middle')
+          .text(bodyShort);
+      }
+    }
+  });
+
+  // Auto-scroll to bottom
+  wrapper.scrollTop = wrapper.scrollHeight;
 }
 
 // --- D3 Force Graph ---
