@@ -50,18 +50,20 @@
   .session-card .goal { color: #8b949e; font-size: 12px; margin-top: 2px; }
   .session-card .started { color: #484f58; font-size: 11px; margin-top: 4px; }
 
-  /* Sequence swim-lane diagram */
+  /* Git-graph sequence panel */
   #sequence-panel { }
-  #sequence-view { flex: 1; overflow: auto; }
-  #sequence-svg { display: block; }
-  .lane-header { fill: #f0f6fc; font-size: 12px; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; text-anchor: middle; }
-  .lane-line { stroke: #30363d; stroke-width: 1; stroke-dasharray: 4 3; }
-  .arrow-questions { stroke: #58a6ff; stroke-width: 1.5; fill: none; }
-  .arrow-dm { stroke: #f0883e; stroke-width: 1.5; fill: none; }
-  .arrow-lobby { stroke: #3fb950; stroke-width: 1; stroke-dasharray: 5 3; fill: none; }
-  .arrow-label { font-size: 10px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill: #8b949e; pointer-events: none; }
-  .lobby-label { font-size: 10px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill: #3fb950; }
-  .sub-conv-box { fill: rgba(240, 136, 62, 0.06); stroke: rgba(240, 136, 62, 0.2); stroke-width: 1; }
+  #sequence-wrap { flex: 1; overflow-y: auto; overflow-x: auto; }
+  #sequence-svg { display: block; min-width: 100%; }
+  .gg-line { fill: none; stroke-width: 2.5; stroke-linecap: round; }
+  .gg-line-dead { stroke-dasharray: 4 3; opacity: 0.3; }
+  .gg-node { stroke: #0d1117; stroke-width: 2; cursor: pointer; }
+  .gg-connector { fill: none; stroke-width: 1.5; opacity: 0.55; }
+  .gg-connector-bc { stroke-dasharray: 5 3; }
+  .gg-col-label { font-size: 11px; font-weight: 600; fill: #c9d1d9; text-anchor: middle; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  .gg-tooltip { pointer-events: none; }
+  .gg-tooltip rect { fill: #1c2128; stroke: #30363d; rx: 4; }
+  .gg-tooltip text { fill: #c9d1d9; font-size: 11px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  .gg-time { font-size: 10px; fill: #484f58; text-anchor: end; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
 
   @media (max-width: 900px) {
     .container { grid-template-columns: 1fr; }
@@ -92,18 +94,9 @@
   </div>
 
   <div class="panel" id="sequence-panel">
-    <div class="panel-header">Sequence</div>
-    <div id="sequence-view">
-      <svg id="sequence-svg">
-        <defs>
-          <marker id="arrowBlue" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="#58a6ff"/>
-          </marker>
-          <marker id="arrowOrange" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="#f0883e"/>
-          </marker>
-        </defs>
-      </svg>
+    <div class="panel-header">Git Graph</div>
+    <div id="sequence-wrap">
+      <svg id="sequence-svg"></svg>
     </div>
   </div>
 </div>
@@ -223,180 +216,277 @@ function renderChat() {
   el.scrollTop = el.scrollHeight;
 }
 
-// --- Sequence Diagram (SVG Swim Lane) ---
+// --- Git-Graph Sequence Visualization ---
+const GG_COLORS = ['#58a6ff', '#f0883e', '#3fb950', '#bc8cff', '#f778ba', '#79c0ff', '#d2a8ff'];
+const GG = {
+  colW: 100,       // horizontal spacing between session columns
+  rowH: 44,        // vertical spacing between event rows
+  leftPad: 60,     // left margin for timestamps
+  topPad: 36,      // top margin for column labels
+  nodeR: 6,        // node circle radius
+  joinR: 8,        // join/leave marker radius
+};
+
+// Track session column order persistently
+const ggColumns = [];             // ordered list of session names
+const ggDeadSessions = new Set(); // sessions that have left
+
+function ggColIndex(name) {
+  let idx = ggColumns.indexOf(name);
+  if (idx === -1) {
+    ggColumns.push(name);
+    idx = ggColumns.length - 1;
+  }
+  return idx;
+}
+
+function ggX(name) {
+  return GG.leftPad + ggColIndex(name) * GG.colW + GG.colW / 2;
+}
+
+function ggColor(name) {
+  return GG_COLORS[ggColIndex(name) % GG_COLORS.length];
+}
+
 function renderSequence() {
-  const wrapper = document.getElementById('sequence-view');
+  const wrap = document.getElementById('sequence-wrap');
   const svg = d3.select('#sequence-svg');
+  svg.selectAll('*').remove();
 
-  // Collect all known session names for lanes
-  const seqSessions = [];
-  const seqSessionSet = new Set();
-  sessions.forEach((_, name) => {
-    if (!seqSessionSet.has(name)) { seqSessions.push(name); seqSessionSet.add(name); }
-  });
-  messages.forEach(m => {
-    if (m.from && m.from !== 'unknown' && m.from !== '_system' && !seqSessionSet.has(m.from)) {
-      seqSessions.push(m.from); seqSessionSet.add(m.from);
-    }
-  });
-
-  if (seqSessions.length === 0) {
-    svg.attr('width', 0).attr('height', 0);
-    return;
-  }
-
-  const laneWidth = 140;
-  const laneMargin = 60;
-  const headerY = 25;
-  const startY = 50;
-  const rowHeight = 40;
-
-  const filteredMsgs = messages.filter(m =>
+  // Filter relevant messages
+  const events = messages.filter(m =>
     m.event_type === 'message' || m.event_type === 'join' || m.event_type === 'leave'
-  ).slice(-40);
+  ).slice(-60);
 
-  const totalWidth = Math.max(laneMargin + seqSessions.length * laneWidth, 300);
-  const totalHeight = startY + filteredMsgs.length * rowHeight + 40;
+  if (events.length === 0) return;
 
-  svg.attr('width', totalWidth).attr('height', totalHeight);
-
-  // Clear previous content (keep defs)
-  svg.selectAll('g.seq-content').remove();
-  const g = svg.append('g').attr('class', 'seq-content');
-
-  const laneX = (idx) => laneMargin + idx * laneWidth + laneWidth / 2;
-
-  // Draw lane headers and lifelines
-  seqSessions.forEach((name, i) => {
-    const x = laneX(i);
-    g.append('rect')
-      .attr('x', x - 42).attr('y', 6).attr('width', 84).attr('height', 22)
-      .attr('rx', 4).attr('fill', '#161b22').attr('stroke', '#30363d').attr('stroke-width', 1);
-    g.append('text')
-      .attr('class', 'lane-header')
-      .attr('x', x).attr('y', headerY - 4)
-      .text(name);
-    g.append('line')
-      .attr('class', 'lane-line')
-      .attr('x1', x).attr('y1', startY - 8)
-      .attr('x2', x).attr('y2', totalHeight - 10);
-  });
-
-  // Detect sub-conversations (consecutive DMs between same pair)
-  const subConvGroups = [];
-  let currentGroup = null;
-  filteredMsgs.forEach((msg, i) => {
-    if (msg.event_type === 'message' && msg.channel && msg.channel.startsWith('claude:session:')) {
-      const target = msg.channel.replace('claude:session:', '');
-      const pair = [msg.from, target].sort().join('<>');
-      if (currentGroup && currentGroup.pair === pair) {
-        currentGroup.end = i;
-      } else {
-        if (currentGroup && currentGroup.end > currentGroup.start) {
-          subConvGroups.push(currentGroup);
-        }
-        currentGroup = { pair, start: i, end: i };
-      }
-    } else {
-      if (currentGroup && currentGroup.end > currentGroup.start) {
-        subConvGroups.push(currentGroup);
-      }
-      currentGroup = null;
+  // Ensure columns exist for all referenced sessions
+  events.forEach(ev => {
+    if (ev.from && ev.from !== 'unknown' && ev.from !== '_system') {
+      ggColIndex(ev.from);
     }
   });
-  if (currentGroup && currentGroup.end > currentGroup.start) {
-    subConvGroups.push(currentGroup);
-  }
 
-  // Draw sub-conversation shaded boxes
-  subConvGroups.forEach(grp => {
-    const names = grp.pair.split('<>');
-    const idx0 = seqSessions.indexOf(names[0]);
-    const idx1 = seqSessions.indexOf(names[1]);
-    if (idx0 < 0 || idx1 < 0) return;
-    const minIdx = Math.min(idx0, idx1);
-    const maxIdx = Math.max(idx0, idx1);
-    const x1 = laneX(minIdx) - 35;
-    const x2 = laneX(maxIdx) + 35;
-    const y1 = startY + grp.start * rowHeight - 8;
-    const y2 = startY + grp.end * rowHeight + 22;
-    g.append('rect')
-      .attr('class', 'sub-conv-box')
-      .attr('x', x1).attr('y', y1)
-      .attr('width', x2 - x1).attr('height', y2 - y1)
-      .attr('rx', 4).attr('ry', 4);
+  const numCols = ggColumns.length;
+  const numRows = events.length;
+  const svgW = GG.leftPad + numCols * GG.colW + 40;
+  const svgH = GG.topPad + numRows * GG.rowH + 40;
+
+  svg.attr('width', svgW).attr('height', svgH);
+
+  // Defs for arrowheads per color
+  const defs = svg.append('defs');
+  GG_COLORS.forEach((color, i) => {
+    defs.append('marker')
+      .attr('id', 'gg-arrow-' + i)
+      .attr('viewBox', '0 0 10 10')
+      .attr('refX', 10).attr('refY', 5)
+      .attr('markerWidth', 5).attr('markerHeight', 5)
+      .attr('orient', 'auto-start-reverse')
+      .append('path')
+      .attr('d', 'M 0 0 L 10 5 L 0 10 z')
+      .attr('fill', color);
   });
 
-  // Draw message arrows
-  filteredMsgs.forEach((msg, i) => {
-    const y = startY + i * rowHeight + 10;
-    const fromIdx = seqSessions.indexOf(msg.from);
+  // Layers: lines behind, connectors, then nodes on top
+  const lineLayer = svg.append('g');
+  const connLayer = svg.append('g');
+  const nodeLayer = svg.append('g');
+  const labelLayer = svg.append('g');
+  const tipLayer = svg.append('g');
 
-    if (msg.event_type === 'join' || msg.event_type === 'leave') {
-      // Lobby: green dashed line spanning all lanes
-      const xStart = laneX(0) - 25;
-      const xEnd = laneX(seqSessions.length - 1) + 25;
-      g.append('line')
-        .attr('class', 'arrow-lobby')
-        .attr('x1', xStart).attr('y1', y)
-        .attr('x2', xEnd).attr('y2', y);
-      const label = msg.event_type === 'join' ? `${msg.from} joined` : `${msg.from} left`;
-      g.append('text')
-        .attr('class', 'lobby-label')
-        .attr('x', (xStart + xEnd) / 2).attr('y', y - 6)
+  // Column header labels
+  ggColumns.forEach((name, ci) => {
+    const x = GG.leftPad + ci * GG.colW + GG.colW / 2;
+    labelLayer.append('text')
+      .attr('class', 'gg-col-label')
+      .attr('x', x).attr('y', 16)
+      .attr('fill', ggColor(name))
+      .text(name);
+    // Faint vertical guide
+    lineLayer.append('line')
+      .attr('x1', x).attr('x2', x)
+      .attr('y1', GG.topPad - 8).attr('y2', svgH - 10)
+      .attr('stroke', ggColor(name))
+      .attr('stroke-width', 1)
+      .attr('opacity', 0.08);
+  });
+
+  // Compute per-session first/last row and alive set at each row
+  const sessionFirstRow = {};
+  const sessionLastRow = {};
+  const aliveAtRow = [];
+  const alive = new Set();
+
+  events.forEach((ev, ri) => {
+    const name = ev.from;
+    if (ev.event_type === 'join') alive.add(name);
+    aliveAtRow.push(new Set(alive));
+    if (name && name !== 'unknown' && name !== '_system') {
+      if (!(name in sessionFirstRow)) sessionFirstRow[name] = ri;
+      sessionLastRow[name] = ri;
+    }
+    if (ev.event_type === 'leave') alive.delete(name);
+  });
+
+  // Draw vertical branch lines per session (solid colored lines)
+  ggColumns.forEach(name => {
+    if (!(name in sessionFirstRow)) return;
+    const x = ggX(name);
+    const y1 = GG.topPad + sessionFirstRow[name] * GG.rowH;
+    const y2 = GG.topPad + sessionLastRow[name] * GG.rowH;
+    const isDead = ggDeadSessions.has(name);
+
+    lineLayer.append('line')
+      .attr('class', 'gg-line' + (isDead ? ' gg-line-dead' : ''))
+      .attr('x1', x).attr('x2', x)
+      .attr('y1', y1).attr('y2', y2)
+      .attr('stroke', ggColor(name));
+  });
+
+  // Render each event as a row
+  events.forEach((ev, ri) => {
+    const y = GG.topPad + ri * GG.rowH;
+    const name = ev.from;
+    const x = (name && name !== 'unknown' && name !== '_system') ? ggX(name) : GG.leftPad + 20;
+    const color = (name && name !== 'unknown' && name !== '_system') ? ggColor(name) : '#8b949e';
+
+    // Timestamp on left
+    const time = new Date(ev.timestamp).toLocaleTimeString();
+    labelLayer.append('text')
+      .attr('class', 'gg-time')
+      .attr('x', GG.leftPad - 8).attr('y', y + 4)
+      .text(time);
+
+    if (ev.event_type === 'join') {
+      // Diamond marker for branch creation
+      nodeLayer.append('rect')
+        .attr('x', x - 7).attr('y', y - 7)
+        .attr('width', 14).attr('height', 14)
+        .attr('rx', 2)
+        .attr('transform', 'rotate(45, ' + x + ', ' + y + ')')
+        .attr('fill', '#3fb950')
+        .attr('class', 'gg-node')
+        .attr('stroke', '#0d1117');
+
+      nodeLayer.append('text')
+        .attr('x', x).attr('y', y + 1)
         .attr('text-anchor', 'middle')
-        .text(label);
-    } else if (msg.event_type === 'message') {
-      const ch = (msg.channel || '').replace('claude:', '');
-      const bodyShort = (msg.body || '').length > 30 ? msg.body.slice(0, 30) + '...' : (msg.body || '');
+        .attr('dominant-baseline', 'central')
+        .attr('fill', '#0d1117')
+        .attr('font-size', '10px')
+        .attr('font-weight', '700')
+        .text('+');
 
-      if (ch === 'questions') {
-        // Broadcast: arrows from sender to every other lane
-        if (fromIdx < 0) return;
-        const fromX = laneX(fromIdx);
-        seqSessions.forEach((name, j) => {
-          if (j === fromIdx) return;
-          const toX = laneX(j);
-          const dir = toX > fromX ? 1 : -1;
-          g.append('line')
-            .attr('class', 'arrow-questions')
-            .attr('x1', fromX + dir * 8).attr('y1', y)
-            .attr('x2', toX - dir * 8).attr('y2', y)
-            .attr('marker-end', 'url(#arrowBlue)');
+      labelLayer.append('text')
+        .attr('x', x + 16).attr('y', y + 4)
+        .attr('fill', '#3fb950')
+        .attr('font-size', '11px')
+        .text('joined');
+
+    } else if (ev.event_type === 'leave') {
+      // Circle with X for branch termination
+      nodeLayer.append('circle')
+        .attr('cx', x).attr('cy', y).attr('r', GG.joinR)
+        .attr('fill', '#f85149')
+        .attr('class', 'gg-node');
+
+      nodeLayer.append('text')
+        .attr('x', x).attr('y', y + 1)
+        .attr('text-anchor', 'middle')
+        .attr('dominant-baseline', 'central')
+        .attr('fill', '#0d1117')
+        .attr('font-size', '10px')
+        .attr('font-weight', '700')
+        .text('\u00d7');
+
+      labelLayer.append('text')
+        .attr('x', x + 16).attr('y', y + 4)
+        .attr('fill', '#f85149')
+        .attr('font-size', '11px')
+        .text('left');
+
+    } else {
+      // Message node: colored dot on sender column
+      nodeLayer.append('circle')
+        .attr('cx', x).attr('cy', y).attr('r', GG.nodeR)
+        .attr('fill', color)
+        .attr('class', 'gg-node');
+
+      const ch = ev.channel.replace('claude:', '');
+      const isBroadcast = ch === 'questions';
+      const isDM = ch.startsWith('session:');
+      const dmTarget = isDM ? ch.replace('session:', '') : null;
+
+      if (isBroadcast) {
+        // Horizontal dashed connectors to all other alive sessions
+        const aliveHere = aliveAtRow[ri];
+        aliveHere.forEach(other => {
+          if (other === name) return;
+          const ox = ggX(other);
+          const x1 = Math.min(x, ox) + GG.nodeR + 2;
+          const x2 = Math.max(x, ox) - GG.nodeR - 2;
+          connLayer.append('line')
+            .attr('class', 'gg-connector gg-connector-bc')
+            .attr('x1', x1).attr('y1', y)
+            .attr('x2', x2).attr('y2', y)
+            .attr('stroke', color);
+          // Small receiver dot
+          connLayer.append('circle')
+            .attr('cx', ox).attr('cy', y).attr('r', 3)
+            .attr('fill', color).attr('opacity', 0.5);
         });
-        // Label above arrows
-        const labelX = fromIdx === 0
-          ? fromX + (laneX(1) - fromX) / 2
-          : fromX - (fromX - laneX(fromIdx - 1)) / 2;
-        g.append('text')
-          .attr('class', 'arrow-label')
-          .attr('x', labelX).attr('y', y - 6)
-          .attr('text-anchor', 'middle')
-          .text(bodyShort);
-      } else if (ch.startsWith('session:')) {
-        // DM: single arrow from sender to target
-        const target = ch.replace('session:', '');
-        const toIdx = seqSessions.indexOf(target);
-        if (fromIdx < 0 || toIdx < 0) return;
-        const fromX = laneX(fromIdx);
-        const toX = laneX(toIdx);
-        const dir = toX > fromX ? 1 : -1;
-        g.append('line')
-          .attr('class', 'arrow-dm')
-          .attr('x1', fromX + dir * 8).attr('y1', y)
-          .attr('x2', toX - dir * 8).attr('y2', y)
-          .attr('marker-end', 'url(#arrowOrange)');
-        g.append('text')
-          .attr('class', 'arrow-label')
-          .attr('x', (fromX + toX) / 2).attr('y', y - 6)
-          .attr('text-anchor', 'middle')
-          .text(bodyShort);
+      } else if (isDM && dmTarget) {
+        // Curved bezier connector (like git merge arc)
+        const tx = ggX(dmTarget);
+        const cp = Math.abs(tx - x) * 0.4;
+        const dir = x < tx ? 1 : -1;
+        const path = 'M ' + (x + dir * (GG.nodeR + 2)) + ' ' + y +
+          ' C ' + (x + dir * cp) + ' ' + (y - 16) +
+          ', ' + (tx - dir * cp) + ' ' + (y - 16) +
+          ', ' + (tx - dir * (GG.nodeR + 2)) + ' ' + y;
+        connLayer.append('path')
+          .attr('class', 'gg-connector')
+          .attr('d', path)
+          .attr('stroke', color)
+          .attr('marker-end', 'url(#gg-arrow-' + (ggColIndex(name) % GG_COLORS.length) + ')');
+        // Receiver dot
+        connLayer.append('circle')
+          .attr('cx', tx).attr('cy', y).attr('r', 3)
+          .attr('fill', ggColor(dmTarget)).attr('opacity', 0.6);
       }
+
+      // Tooltip (hidden until hover)
+      const bodyShort = (ev.body || '').length > 40 ? ev.body.slice(0, 40) + '...' : (ev.body || '');
+      const tipW = Math.max(bodyShort.length * 6.5 + 16, 80);
+      const tipX = x + 14;
+      const tipY = y - 14;
+
+      const tipG = tipLayer.append('g')
+        .attr('class', 'gg-tooltip')
+        .attr('opacity', 0);
+
+      tipG.append('rect')
+        .attr('x', tipX).attr('y', tipY - 10)
+        .attr('width', tipW).attr('height', 20)
+        .attr('rx', 4);
+
+      tipG.append('text')
+        .attr('x', tipX + 6).attr('y', tipY + 4)
+        .text(bodyShort);
+
+      // Invisible hover target
+      nodeLayer.append('circle')
+        .attr('cx', x).attr('cy', y).attr('r', 14)
+        .attr('fill', 'transparent')
+        .attr('cursor', 'pointer')
+        .on('mouseenter', function() { tipG.attr('opacity', 1); })
+        .on('mouseleave', function() { tipG.attr('opacity', 0); });
     }
   });
 
   // Auto-scroll to bottom
-  wrapper.scrollTop = wrapper.scrollHeight;
+  wrap.scrollTop = wrap.scrollHeight;
 }
 
 // --- D3 Force Graph ---
@@ -407,13 +497,13 @@ function initGraph() {
   const width = svg.node().parentElement.clientWidth;
   const height = svg.node().parentElement.clientHeight - 35;
 
-  svg.attr('viewBox', `0 0 ${width} ${height}`);
+  svg.attr('viewBox', '0 0 ' + width + ' ' + height);
 
   linkGroup = svg.append('g').attr('class', 'links');
   nodeGroup = svg.append('g').attr('class', 'nodes');
 
   simulation = d3.forceSimulation()
-    .force('link', d3.forceLink().id(d => d.id).distance(150))
+    .force('link', d3.forceLink().id(function(d) { return d.id; }).distance(150))
     .force('charge', d3.forceManyBody().strength(-300))
     .force('center', d3.forceCenter(width / 2, height / 2))
     .force('collision', d3.forceCollide(50));
@@ -422,55 +512,55 @@ function initGraph() {
 function updateGraph() {
   if (!simulation) return;
 
-  const nodes = Array.from(sessions.keys()).map(name => ({
-    id: name,
-    goal: sessions.get(name)?.goal || '',
-  }));
+  const nodes = Array.from(sessions.keys()).map(function(name) {
+    return { id: name, goal: sessions.get(name)?.goal || '' };
+  });
 
   const links = [];
-  edges.forEach((count, key) => {
-    const [from, to] = key.split('->');
+  edges.forEach(function(count, key) {
+    const parts = key.split('->');
+    const from = parts[0], to = parts[1];
     if (from && to && to !== 'broadcast' && sessions.has(from) && sessions.has(to)) {
-      links.push({ source: from, target: to, count });
+      links.push({ source: from, target: to, count: count });
     }
   });
 
-  // Colors for nodes
   const colors = ['#58a6ff', '#f0883e', '#3fb950', '#bc8cff', '#f778ba', '#79c0ff', '#d2a8ff'];
 
-  // Links
-  const link = linkGroup.selectAll('line').data(links, d => `${d.source.id || d.source}-${d.target.id || d.target}`);
+  const link = linkGroup.selectAll('line').data(links, function(d) {
+    return (d.source.id || d.source) + '-' + (d.target.id || d.target);
+  });
   link.exit().remove();
-  const linkEnter = link.enter().append('line').attr('class', 'link active').attr('stroke-width', d => Math.min(d.count + 1, 5));
+  const linkEnter = link.enter().append('line').attr('class', 'link active')
+    .attr('stroke-width', function(d) { return Math.min(d.count + 1, 5); });
   const linkMerged = linkEnter.merge(link);
 
-  // Nodes
-  const node = nodeGroup.selectAll('g.node').data(nodes, d => d.id);
+  const node = nodeGroup.selectAll('g.node').data(nodes, function(d) { return d.id; });
   node.exit().remove();
   const nodeEnter = node.enter().append('g').attr('class', 'node').call(drag(simulation));
 
   nodeEnter.append('circle')
     .attr('r', 24)
-    .attr('fill', (d, i) => colors[i % colors.length]);
+    .attr('fill', function(d, i) { return colors[i % colors.length]; });
 
   nodeEnter.append('text')
     .attr('dy', -32)
     .attr('text-anchor', 'middle')
-    .text(d => d.id);
+    .text(function(d) { return d.id; });
 
   nodeEnter.append('text')
     .attr('class', 'goal')
     .attr('dy', 42)
     .attr('text-anchor', 'middle')
-    .text(d => d.goal.length > 30 ? d.goal.slice(0, 30) + '...' : d.goal);
+    .text(function(d) { return d.goal.length > 30 ? d.goal.slice(0, 30) + '...' : d.goal; });
 
   const nodeMerged = nodeEnter.merge(node);
 
-  simulation.nodes(nodes).on('tick', () => {
+  simulation.nodes(nodes).on('tick', function() {
     linkMerged
-      .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
-      .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
-    nodeMerged.attr('transform', d => `translate(${d.x},${d.y})`);
+      .attr('x1', function(d) { return d.source.x; }).attr('y1', function(d) { return d.source.y; })
+      .attr('x2', function(d) { return d.target.x; }).attr('y2', function(d) { return d.target.y; });
+    nodeMerged.attr('transform', function(d) { return 'translate(' + d.x + ',' + d.y + ')'; });
   });
 
   simulation.force('link').links(links);
@@ -479,9 +569,9 @@ function updateGraph() {
 
 function drag(sim) {
   return d3.drag()
-    .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
-    .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
-    .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; });
+    .on('start', function(e, d) { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+    .on('drag', function(e, d) { d.fx = e.x; d.fy = e.y; })
+    .on('end', function(e, d) { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; });
 }
 
 function esc(s) {
