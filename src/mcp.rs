@@ -112,7 +112,16 @@ impl McpContext {
                         },
                         {
                             "name": "list_sessions",
-                            "description": "List all active Claude Code sessions and their goals",
+                            "description": "List all active Claude Code sessions and their goals in the current room",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {},
+                                "required": []
+                            }
+                        },
+                        {
+                            "name": "list_rooms",
+                            "description": "List all known rooms and their metadata",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {},
@@ -175,6 +184,29 @@ impl McpContext {
                                             .and_then(|v| v.get("goal").and_then(|g| g.as_str()).map(String::from))
                                             .unwrap_or_else(|| data.clone());
                                         text.push_str(&format!("  {} — {}\n", name, goal));
+                                    }
+                                    send_response(&id, json!({
+                                        "content": [{ "type": "text", "text": text }]
+                                    }));
+                                }
+                                Err(e) => send_response(&id, json!({
+                                    "content": [{ "type": "text", "text": format!("Error: {}", e) }],
+                                    "isError": true
+                                })),
+                            }
+                        }
+
+                        "list_rooms" => {
+                            let result = publisher.list_rooms();
+
+                            match result {
+                                Ok(rooms) => {
+                                    let mut text = String::from("Known rooms:\n");
+                                    if rooms.is_empty() {
+                                        text.push_str("  (none)\n");
+                                    }
+                                    for (name, data) in &rooms {
+                                        text.push_str(&format!("  {} — {}\n", name, data));
                                     }
                                     send_response(&id, json!({
                                         "content": [{ "type": "text", "text": text }]

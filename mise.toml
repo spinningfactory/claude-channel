@@ -286,6 +286,11 @@ echo "Dashboard at http://localhost:8900"
 ./target/release/claude-channel-dashboard
 """
 
+[tasks.generate-test-data]
+description = "Generate multi-day multi-room test data (7 rooms, 173 events, 3 days)"
+depends = ["up"]
+run = "./scripts/generate-test-data.sh"
+
 [tasks.clean]
 description = "Stop infrastructure and clean build artifacts"
 run = """

@@ -116,7 +116,8 @@ mise run clean      # Stop infrastructure + cargo clean
 mise run session -- <name> <goal> [project-dir]
 mise run sessions    # List active sessions
 mise run test-multi  # Launch 3 test sessions in tmux
-mise run dashboard   # Web dashboard at http://localhost:8900 (4 visualization modes)
+mise run dashboard          # Web dashboard at http://localhost:8900
+mise run generate-test-data # Populate 7 rooms, 173 events across 3 days
 ```
 
 ### Multi-session coordination
@@ -140,8 +141,8 @@ mise run sessions
 
 The channel binary handles everything automatically:
 - **Registration** in Redis on startup, deregistration on exit
-- **Subscribes** to `claude:lobby`, `claude:questions`, and `claude:session:<name>`
-- **Exposes MCP tools**: `publish` (send messages) and `list_sessions` (see who's online)
+- **Room-scoped** channels — sessions only see messages from their room
+- **Exposes MCP tools**: `publish`, `list_sessions`, `list_rooms`
 
 Sessions are instructed to **only respond when they have direct, concrete knowledge**
 relevant to the question. They won't butt in with unsolicited advice.
@@ -152,6 +153,7 @@ Add coordination to any config with:
 coordination:
   url: "redis://localhost:16379"
   goal: "what this session is working on"
+  room: "morning-standup"   # optional, defaults to "default"
 ```
 
 ### Project structure
@@ -204,4 +206,10 @@ The web dashboard (`mise run dashboard`) provides real-time visualization of mul
 | Threaded | Slack-style with collapsible DM threads |
 | Gantt | Horizontal timeline with session swim lanes |
 
-Events are persisted via Redis Streams (`claude:stream`) so the dashboard replays full history on page load. Tab selection persists across refreshes.
+Features:
+- **Date navigation** — browse conversations from previous days
+- **Room filtering** — each room is an isolated conversation space, filterable in the dashboard
+- **Persistence** — events stored in Redis Streams, replayed on page load
+- **Tab selection** persists across refreshes via localStorage
+
+Generate sample data with `mise run generate-test-data` (7 rooms, 173 events, 3 days).
