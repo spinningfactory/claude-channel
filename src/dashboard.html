@@ -265,10 +265,12 @@ function connect(roomId) {
   if (evtSource) {
     evtSource.close();
   }
-  var url = '/events';
-  if (roomId) {
-    url = '/events?room=' + encodeURIComponent(roomId);
+  var params = [];
+  if (roomId) params.push('room=' + encodeURIComponent(roomId));
+  if (currentDateIndex >= 0 && currentDateIndex < availableDates.length) {
+    params.push('date=' + encodeURIComponent(availableDates[currentDateIndex]));
   }
+  var url = '/events' + (params.length ? '?' + params.join('&') : '');
   evtSource = new EventSource(url);
   evtSource.onopen = function() {
     document.getElementById('status-dot').className = 'dot connected';
@@ -352,8 +354,9 @@ function navigateDate(delta) {
   var date = availableDates[currentDateIndex];
   fetchRoomsForDate(date).then(function() {
     currentRoom = '';
+    document.getElementById('room-select').value = '';
     resetState();
-    connect('');
+    connect(currentRoom);
   });
 }
 
@@ -368,13 +371,17 @@ document.getElementById('room-select').addEventListener('change', function() {
 
 function handleEvent(event) {
   if (event.event_type === 'sessions') {
-    var sessionData = JSON.parse(event.body);
-    sessions.clear();
-    sessionData.forEach(function(pair) {
-      sessions.set(pair[0], pair[1]);
-    });
-    renderSessions();
-    updateGraph();
+    // Only use the global session poller for today's date
+    var isToday = currentDateIndex >= 0 && currentDateIndex === availableDates.length - 1;
+    if (isToday && !currentRoom) {
+      var sessionData = JSON.parse(event.body);
+      sessions.clear();
+      sessionData.forEach(function(pair) {
+        sessions.set(pair[0], pair[1]);
+      });
+      renderSessions();
+      updateGraph();
+    }
     return;
   }
 
@@ -387,6 +394,12 @@ function handleEvent(event) {
   } else if (event.event_type === 'leave') {
     sessions.delete(event.from);
     renderSessions();
+  } else if (event.event_type === 'message' && event.from && event.from !== 'unknown' && event.from !== '_system') {
+    // Ensure session appears even without explicit join event
+    if (!sessions.has(event.from)) {
+      sessions.set(event.from, { goal: '' });
+      renderSessions();
+    }
   }
 
   if (event.from && event.from !== 'unknown' && event.from !== '_system') {
