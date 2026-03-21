@@ -1,4 +1,4 @@
- claude-channel
+we claude-channel
 
 A configurable MCP channel server for [Claude Code](https://claude.ai/code). Aggregates events from multiple sources and pushes them into a running Claude Code session as channel notifications.
 
@@ -114,7 +114,8 @@ mise run clean      # Stop infrastructure + cargo clean
 
 # Multi-session coordination
 mise run session -- <name> <goal> [project-dir]
-mise run sessions   # List active sessions
+mise run sessions    # List active sessions
+mise run test-multi  # Launch 3 test sessions in tmux
 ```
 
 ### Multi-session coordination
