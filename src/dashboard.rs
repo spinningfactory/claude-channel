@@ -83,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
             match base_path {
                 "/events" => {
                     let room_filter = query_params.get("room").cloned();
+                    let date_filter = query_params.get("date").cloned();
 
                     // SSE stream
                     let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: keep-alive\r\n\r\n";
@@ -91,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
                     // Replay history from Redis stream
                     let redis_url = std::env::var("REDIS_URL")
                         .unwrap_or_else(|_| "redis://localhost:16379".to_string());
-                    if let Ok(history) = replay_history(&redis_url, room_filter.as_deref()).await {
+                    if let Ok(history) = replay_history(&redis_url, room_filter.as_deref(), date_filter.as_deref()).await {
                         for event in history {
                             let data = serde_json::to_string(&event).unwrap_or_default();
                             let msg = format!("data: {}\n\n", data);
@@ -347,7 +348,7 @@ fn get_room_dates(url: &str) -> anyhow::Result<String> {
     Ok(serde_json::to_string(&dates)?)
 }
 
-async fn replay_history(url: &str, room: Option<&str>) -> anyhow::Result<Vec<Event>> {
+async fn replay_history(url: &str, room: Option<&str>, date: Option<&str>) -> anyhow::Result<Vec<Event>> {
     let client = redis::Client::open(url)?;
     let mut con = client.get_multiplexed_async_connection().await?;
 
@@ -357,11 +358,24 @@ async fn replay_history(url: &str, room: Option<&str>) -> anyhow::Result<Vec<Eve
         None => "claude:stream".to_string(),
     };
 
-    // XRANGE returns all entries
+    // If date specified, compute timestamp range for XRANGE
+    let (range_start, range_end) = if let Some(date_str) = date {
+        // Parse YYYY-MM-DD and convert to millisecond timestamps
+        let start = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+            .map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis())
+            .unwrap_or(0);
+        let end = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+            .map(|d| d.succ_opt().unwrap_or(d).and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis() - 1)
+            .unwrap_or(i64::MAX);
+        (start.to_string(), end.to_string())
+    } else {
+        ("-".to_string(), "+".to_string())
+    };
+
     let result: Vec<redis::Value> = redis::cmd("XRANGE")
         .arg(&stream_key)
-        .arg("-")
-        .arg("+")
+        .arg(&range_start)
+        .arg(&range_end)
         .query_async(&mut con)
         .await?;
 
