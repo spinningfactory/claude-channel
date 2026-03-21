@@ -277,6 +277,15 @@ echo "  Kill:    tmux kill-session -t claude-multi"
 echo "  List:    mise run sessions"
 """
 
+[tasks.dashboard]
+description = "Launch the web dashboard for visualizing session communication"
+depends = ["up"]
+run = """
+cargo build --release --features dashboard --bin claude-channel-dashboard 2>&1 | tail -1
+echo "Dashboard at http://localhost:8900"
+./target/release/claude-channel-dashboard
+"""
+
 [tasks.clean]
 description = "Stop infrastructure and clean build artifacts"
 run = """
