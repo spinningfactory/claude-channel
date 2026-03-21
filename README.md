@@ -116,6 +116,7 @@ mise run clean      # Stop infrastructure + cargo clean
 mise run session -- <name> <goal> [project-dir]
 mise run sessions    # List active sessions
 mise run test-multi  # Launch 3 test sessions in tmux
+mise run dashboard   # Web dashboard at http://localhost:8900
 ```
 
 ### Multi-session coordination
@@ -159,7 +160,10 @@ coordination:
 src/
   main.rs             Config loading, source dispatch, mpsc wiring
   config.rs           YAML config structs
-  mcp.rs              MCP JSON-RPC protocol (one-way, no tools)
+  mcp.rs              MCP JSON-RPC protocol (tools when coordination active)
+  coordination.rs     Session registry, pub/sub, publish/list tools
+  dashboard.rs        Web dashboard binary (SSE + embedded HTML)
+  dashboard.html      Dashboard frontend (D3.js graph + chat timeline)
   sources/
     mod.rs             Event struct + EventSource trait
     webhook.rs         HTTP POST listener

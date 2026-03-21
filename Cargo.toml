@@ -10,6 +10,7 @@ sqs = ["dep:aws-sdk-sqs", "dep:aws-config"]
 redis = ["dep:redis", "dep:futures", "dep:chrono"]
 postgres = ["dep:tokio-postgres", "dep:futures"]
 nats = ["dep:async-nats", "dep:futures"]
+dashboard = ["dep:redis", "dep:futures", "dep:chrono"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -27,3 +28,12 @@ tokio-postgres = { version = "0.7", optional = true }
 futures = { version = "0.3", optional = true }
 chrono = { version = "0.4", optional = true }
 async-nats = { version = "0.38", optional = true }
+
+[[bin]]
+name = "claude-channel"
+path = "src/main.rs"
+
+[[bin]]
+name = "claude-channel-dashboard"
+path = "src/dashboard.rs"
+required-features = ["dashboard"]

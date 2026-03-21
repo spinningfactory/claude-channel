@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Channel Dashboard</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; }
+
+  .container { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto 1fr; height: 100vh; gap: 1px; background: #21262d; }
+  .header { grid-column: 1 / -1; padding: 12px 20px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 16px; }
+  .header h1 { font-size: 16px; font-weight: 600; color: #f0f6fc; }
+  .header .status { font-size: 13px; color: #8b949e; }
+  .header .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+  .dot.connected { background: #3fb950; }
+  .dot.disconnected { background: #f85149; }
+
+  .panel { background: #0d1117; overflow: hidden; display: flex; flex-direction: column; }
+  .panel-header { padding: 10px 16px; font-size: 13px; font-weight: 600; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #21262d; background: #161b22; }
+
+  /* Graph panel */
+  #graph-panel svg { width: 100%; height: 100%; }
+  .node circle { stroke: #30363d; stroke-width: 2; cursor: pointer; }
+  .node text { fill: #c9d1d9; font-size: 11px; font-weight: 500; }
+  .node .goal { fill: #8b949e; font-size: 10px; }
+  .link { stroke: #30363d; stroke-width: 1.5; fill: none; }
+  .link.active { stroke: #58a6ff; stroke-width: 2; }
+  .message-particle { fill: #58a6ff; }
+
+  /* Chat panel */
+  #chat-panel { overflow: hidden; }
+  #chat-messages { flex: 1; overflow-y: auto; padding: 8px; }
+  .chat-msg { padding: 6px 12px; margin: 2px 0; border-radius: 6px; font-size: 13px; line-height: 1.4; }
+  .chat-msg.message { background: #161b22; border-left: 3px solid #58a6ff; }
+  .chat-msg.join { background: #0d2818; border-left: 3px solid #3fb950; color: #3fb950; font-size: 12px; }
+  .chat-msg.leave { background: #2d1117; border-left: 3px solid #f85149; color: #f85149; font-size: 12px; }
+  .chat-msg .meta { display: flex; gap: 8px; margin-bottom: 2px; }
+  .chat-msg .from { font-weight: 600; color: #f0f6fc; }
+  .chat-msg .channel { color: #8b949e; font-size: 11px; }
+  .chat-msg .time { color: #484f58; font-size: 11px; margin-left: auto; }
+  .chat-msg .body { color: #c9d1d9; }
+
+  /* Sessions panel */
+  #sessions-panel { }
+  #sessions-list { flex: 1; overflow-y: auto; padding: 8px; }
+  .session-card { padding: 10px 12px; margin: 4px 0; background: #161b22; border-radius: 6px; border: 1px solid #21262d; }
+  .session-card .name { font-weight: 600; color: #58a6ff; font-size: 14px; }
+  .session-card .goal { color: #8b949e; font-size: 12px; margin-top: 2px; }
+  .session-card .started { color: #484f58; font-size: 11px; margin-top: 4px; }
+
+  /* Sequence diagram */
+  #sequence-panel { }
+  #sequence-view { flex: 1; overflow-y: auto; padding: 8px; font-family: monospace; font-size: 12px; }
+  .seq-line { padding: 2px 0; white-space: nowrap; }
+  .seq-arrow { color: #58a6ff; }
+  .seq-from { color: #f0883e; }
+  .seq-to { color: #a5d6ff; }
+  .seq-body { color: #8b949e; }
+
+  @media (max-width: 900px) {
+    .container { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>Claude Channel Dashboard</h1>
+    <span class="status"><span class="dot" id="status-dot"></span><span id="status-text">Connecting...</span></span>
+    <span class="status" id="session-count"></span>
+  </div>
+
+  <div class="panel" id="graph-panel">
+    <div class="panel-header">Session Graph</div>
+    <svg id="graph"></svg>
+  </div>
+
+  <div class="panel" id="chat-panel">
+    <div class="panel-header">Message Feed</div>
+    <div id="chat-messages"></div>
+  </div>
+
+  <div class="panel" id="sessions-panel">
+    <div class="panel-header">Active Sessions</div>
+    <div id="sessions-list"></div>
+  </div>
+
+  <div class="panel" id="sequence-panel">
+    <div class="panel-header">Sequence</div>
+    <div id="sequence-view"></div>
+  </div>
+</div>
+
+<script>
+const sessions = new Map();
+const messages = [];
+const edges = new Map(); // "from->to" => count
+
+// --- SSE Connection ---
+let evtSource;
+function connect() {
+  evtSource = new EventSource('/events');
+  evtSource.onopen = () => {
+    document.getElementById('status-dot').className = 'dot connected';
+    document.getElementById('status-text').textContent = 'Connected';
+  };
+  evtSource.onerror = () => {
+    document.getElementById('status-dot').className = 'dot disconnected';
+    document.getElementById('status-text').textContent = 'Reconnecting...';
+  };
+  evtSource.onmessage = (e) => {
+    const event = JSON.parse(e.data);
+    handleEvent(event);
+  };
+}
+
+function handleEvent(event) {
+  if (event.event_type === 'sessions') {
+    // Full session list update
+    const sessionData = JSON.parse(event.body);
+    sessions.clear();
+    sessionData.forEach(([name, data]) => {
+      sessions.set(name, data);
+    });
+    renderSessions();
+    updateGraph();
+    return;
+  }
+
+  // Chat message
+  messages.push(event);
+  if (messages.length > 200) messages.shift();
+
+  if (event.event_type === 'join') {
+    sessions.set(event.from, { goal: event.body });
+    renderSessions();
+  } else if (event.event_type === 'leave') {
+    sessions.delete(event.from);
+    renderSessions();
+  }
+
+  // Track edges for graph
+  if (event.from && event.from !== 'unknown' && event.from !== '_system') {
+    let target = 'broadcast';
+    if (event.channel.startsWith('claude:session:')) {
+      target = event.channel.replace('claude:session:', '');
+    }
+    const key = `${event.from}->${target}`;
+    edges.set(key, (edges.get(key) || 0) + 1);
+  }
+
+  renderChat();
+  renderSequence();
+  updateGraph();
+}
+
+// --- Sessions List ---
+function renderSessions() {
+  const el = document.getElementById('sessions-list');
+  const count = document.getElementById('session-count');
+  count.textContent = `${sessions.size} session${sessions.size !== 1 ? 's' : ''} online`;
+
+  el.innerHTML = '';
+  sessions.forEach((data, name) => {
+    const card = document.createElement('div');
+    card.className = 'session-card';
+    const goal = typeof data === 'object' ? (data.goal || 'unknown') : data;
+    const started = typeof data === 'object' && data.started
+      ? new Date(data.started).toLocaleTimeString() : '';
+    card.innerHTML = `
+      <div class="name">${esc(name)}</div>
+      <div class="goal">${esc(goal)}</div>
+      ${started ? `<div class="started">since ${started}</div>` : ''}
+    `;
+    el.appendChild(card);
+  });
+}
+
+// --- Chat Feed ---
+function renderChat() {
+  const el = document.getElementById('chat-messages');
+  const last10 = messages.slice(-50);
+  el.innerHTML = '';
+  last10.forEach(msg => {
+    const div = document.createElement('div');
+    div.className = `chat-msg ${msg.event_type}`;
+    const time = new Date(msg.timestamp).toLocaleTimeString();
+    const ch = msg.channel.replace('claude:', '');
+
+    if (msg.event_type === 'join') {
+      div.innerHTML = `<span class="time">${time}</span> <b>${esc(msg.from)}</b> joined — ${esc(msg.body)}`;
+    } else if (msg.event_type === 'leave') {
+      div.innerHTML = `<span class="time">${time}</span> <b>${esc(msg.from)}</b> left`;
+    } else {
+      div.innerHTML = `
+        <div class="meta">
+          <span class="from">${esc(msg.from)}</span>
+          <span class="channel">#${esc(ch)}</span>
+          <span class="time">${time}</span>
+        </div>
+        <div class="body">${esc(msg.body)}</div>
+      `;
+    }
+    el.appendChild(div);
+  });
+  el.scrollTop = el.scrollHeight;
+}
+
+// --- Sequence Diagram ---
+function renderSequence() {
+  const el = document.getElementById('sequence-view');
+  const last20 = messages.filter(m => m.event_type === 'message' || m.event_type === 'join' || m.event_type === 'leave').slice(-30);
+  el.innerHTML = '';
+  last20.forEach(msg => {
+    const div = document.createElement('div');
+    div.className = 'seq-line';
+    const ch = msg.channel.replace('claude:', '');
+    const time = new Date(msg.timestamp).toLocaleTimeString();
+
+    if (msg.event_type === 'join') {
+      div.innerHTML = `<span class="seq-body">${time}</span> <span class="seq-from">${esc(msg.from)}</span> <span class="seq-arrow">──▶ joined</span>`;
+    } else if (msg.event_type === 'leave') {
+      div.innerHTML = `<span class="seq-body">${time}</span> <span class="seq-from">${esc(msg.from)}</span> <span class="seq-arrow">──▶ left</span>`;
+    } else {
+      let target = ch;
+      if (ch.startsWith('session:')) target = ch.replace('session:', '');
+      const bodyShort = msg.body.length > 50 ? msg.body.slice(0, 50) + '...' : msg.body;
+      div.innerHTML = `<span class="seq-body">${time}</span> <span class="seq-from">${esc(msg.from)}</span> <span class="seq-arrow">──▶</span> <span class="seq-to">${esc(target)}</span> <span class="seq-body">${esc(bodyShort)}</span>`;
+    }
+    el.appendChild(div);
+  });
+  el.scrollTop = el.scrollHeight;
+}
+
+// --- D3 Force Graph ---
+let simulation, svg, linkGroup, nodeGroup;
+
+function initGraph() {
+  svg = d3.select('#graph');
+  const width = svg.node().parentElement.clientWidth;
+  const height = svg.node().parentElement.clientHeight - 35;
+
+  svg.attr('viewBox', `0 0 ${width} ${height}`);
+
+  linkGroup = svg.append('g').attr('class', 'links');
+  nodeGroup = svg.append('g').attr('class', 'nodes');
+
+  simulation = d3.forceSimulation()
+    .force('link', d3.forceLink().id(d => d.id).distance(150))
+    .force('charge', d3.forceManyBody().strength(-300))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collision', d3.forceCollide(50));
+}
+
+function updateGraph() {
+  if (!simulation) return;
+
+  const nodes = Array.from(sessions.keys()).map(name => ({
+    id: name,
+    goal: sessions.get(name)?.goal || '',
+  }));
+
+  const links = [];
+  edges.forEach((count, key) => {
+    const [from, to] = key.split('->');
+    if (from && to && to !== 'broadcast' && sessions.has(from) && sessions.has(to)) {
+      links.push({ source: from, target: to, count });
+    }
+  });
+
+  // Colors for nodes
+  const colors = ['#58a6ff', '#f0883e', '#3fb950', '#bc8cff', '#f778ba', '#79c0ff', '#d2a8ff'];
+
+  // Links
+  const link = linkGroup.selectAll('line').data(links, d => `${d.source.id || d.source}-${d.target.id || d.target}`);
+  link.exit().remove();
+  const linkEnter = link.enter().append('line').attr('class', 'link active').attr('stroke-width', d => Math.min(d.count + 1, 5));
+  const linkMerged = linkEnter.merge(link);
+
+  // Nodes
+  const node = nodeGroup.selectAll('g.node').data(nodes, d => d.id);
+  node.exit().remove();
+  const nodeEnter = node.enter().append('g').attr('class', 'node').call(drag(simulation));
+
+  nodeEnter.append('circle')
+    .attr('r', 24)
+    .attr('fill', (d, i) => colors[i % colors.length]);
+
+  nodeEnter.append('text')
+    .attr('dy', -32)
+    .attr('text-anchor', 'middle')
+    .text(d => d.id);
+
+  nodeEnter.append('text')
+    .attr('class', 'goal')
+    .attr('dy', 42)
+    .attr('text-anchor', 'middle')
+    .text(d => d.goal.length > 30 ? d.goal.slice(0, 30) + '...' : d.goal);
+
+  const nodeMerged = nodeEnter.merge(node);
+
+  simulation.nodes(nodes).on('tick', () => {
+    linkMerged
+      .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    nodeMerged.attr('transform', d => `translate(${d.x},${d.y})`);
+  });
+
+  simulation.force('link').links(links);
+  simulation.alpha(0.3).restart();
+}
+
+function drag(sim) {
+  return d3.drag()
+    .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+    .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+    .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; });
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// --- Init ---
+initGraph();
+connect();
+</script>
+</body>
+</html>
