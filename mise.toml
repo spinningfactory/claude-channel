@@ -275,10 +275,19 @@ echo ""
 echo "  Attach:  tmux attach -t claude-multi"
 echo "  Kill:    tmux kill-session -t claude-multi"
 echo "  List:    mise run sessions"
+
+
+[tasks.server]
+description = "Start the channel server (TCP + dashboard)"
+depends = ["build"]
+env = { REDIS_URL = "redis://127.0.0.1:16379", TCP_PORT = "9000", DASHBOARD_PORT = "8900" }
+run = """
+echo "Server: TCP on :9000, Dashboard on http://localhost:8900"
+./target/release/claude-channel-server
 """
 
 [tasks.dashboard]
-description = "Launch the web dashboard for visualizing session communication"
+description = "Launch the web dashboard (legacy standalone mode)"
 depends = ["up"]
 run = """
 cargo build --release --features dashboard --bin claude-channel-dashboard 2>&1 | tail -1
@@ -294,6 +303,27 @@ run = "./scripts/generate-test-data.sh"
 [tasks.audit]
 description = "Audit test data in Redis for ordering and consistency issues"
 run = "python3 ./scripts/audit-test-data.py"
+
+[tasks.docker-build]
+description = "Build the Docker image"
+run = "docker compose build"
+
+[tasks.docker-up]
+description = "Start production services with docker compose"
+run = "docker compose up -d"
+
+[tasks.docker-down]
+description = "Stop production services"
+run = "docker compose down"
+
+[tasks.docker-logs]
+description = "Show docker compose logs"
+run = "docker compose logs -f"
+
+[tasks.deploy]
+description = "Build and start production services"
+depends = ["docker-build"]
+run = "docker compose up -d"
 
 [tasks.clean]
 description = "Stop infrastructure and clean build artifacts"

@@ -27,13 +27,11 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "redis")]
     let coordinator = if let Some(ref coord_config) = config.coordination {
         eprintln!("[channel] Coordination enabled: {}", coord_config.goal);
-        let room = coord_config.room_id().to_string();
-        eprintln!("[channel] Room: {}", room);
         let coordinator = coordination::Coordinator::new(
             server_name.clone(),
             coord_config.goal.clone(),
             coord_config.url.clone(),
-            room.clone(),
+            coord_config.room_id().to_string(),
         )?;
         coordinator.register().await?;
 
@@ -43,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
             server_name.clone(),
             coord_config.goal.clone(),
             coord_config.url.clone(),
-            room,
+            coord_config.room_id().to_string(),
         )?;
         tokio::spawn(async move {
             if let Err(e) = coord_sub.subscribe(coord_tx).await {
@@ -57,9 +55,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     #[cfg(feature = "redis")]
-    let publisher = coordinator
-        .as_ref()
-        .and_then(|c| c.publisher().ok());
+    let publisher = coordinator.as_ref().and_then(|c| c.publisher().ok());
 
     let instructions = config.instructions.clone().unwrap_or_else(|| {
         #[cfg(feature = "redis")]
@@ -150,14 +146,8 @@ async fn main() -> anyhow::Result<()> {
             }
 
             #[cfg(feature = "nats")]
-            config::SourceConfig::Nats {
-                url,
-                subjects,
-            } => {
-                let source = sources::nats::NatsSource {
-                    url,
-                    subjects,
-                };
+            config::SourceConfig::Nats { url, subjects } => {
+                let source = sources::nats::NatsSource { url, subjects };
                 let tx = tx.clone();
                 tokio::spawn(async move {
                     if let Err(e) = source.run(tx).await {

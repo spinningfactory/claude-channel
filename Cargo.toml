@@ -37,3 +37,12 @@ path = "src/main.rs"
 name = "claude-channel-dashboard"
 path = "src/dashboard.rs"
 required-features = ["dashboard"]
+
+[[bin]]
+name = "claude-channel-shim"
+path = "src/shim.rs"
+
+[[bin]]
+name = "claude-channel-server"
+path = "src/server.rs"
+required-features = ["redis", "dashboard"]
