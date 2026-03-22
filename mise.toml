@@ -5,13 +5,7 @@ run = "cargo build --release --all-features"
 [tasks.up]
 description = "Start test infrastructure (redis, postgres, localstack, nats)"
 env = { AWS_ENDPOINT_URL = "http://localhost:4566", AWS_ACCESS_KEY_ID = "test", AWS_SECRET_ACCESS_KEY = "test", AWS_DEFAULT_REGION = "us-east-1" }
-run = """
-docker compose -f .devcontainer/docker-compose.yml up -d redis postgres localstack nats
-echo "Waiting for services..."
-until curl -s http://localhost:4566/_localstack/health 2>/dev/null | grep -q '"sqs"'; do sleep 1; done
-uvx --from awscli aws sqs create-queue --endpoint-url http://localhost:4566 --queue-name test-queue --region us-east-1 > /dev/null 2>&1 || true
-echo "All services ready"
-"""
+run = "bash scripts/mise/up.sh"
 
 [tasks.down]
 description = "Stop test infrastructure"
@@ -20,183 +14,19 @@ run = "docker compose -f .devcontainer/docker-compose.yml down"
 [tasks.test]
 description = "Quick test (webhook only, no containers)"
 depends = ["build"]
-run = """
-#!/usr/bin/env bash
-set -euo pipefail
-
-BINARY="./target/release/claude-channel"
-PORT=8799
-STDOUT_LOG="/tmp/channel-test-stdout.log"
-STDERR_LOG="/tmp/channel-test-stderr.log"
-
-cat > /tmp/test-webhook.yaml <<YAML
-server_name: "test"
-sources:
-  - type: webhook
-    port: $PORT
-    bind: "127.0.0.1"
-YAML
-
-fuser -k $PORT/tcp 2>/dev/null || true
-
-FIFO=$(mktemp -u)
-mkfifo "$FIFO"
-"$BINARY" /tmp/test-webhook.yaml < "$FIFO" > "$STDOUT_LOG" 2>"$STDERR_LOG" &
-PID=$!
-exec 3>"$FIFO"
-
-cleanup() { exec 3>&- 2>/dev/null || true; kill $PID 2>/dev/null || true; rm -f "$FIFO" /tmp/test-webhook.yaml; }
-trap cleanup EXIT
-sleep 0.5
-
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' >&3
-sleep 0.3
-
-PASS=0 FAIL=0
-check() { if "$@"; then echo "  ✓ $DESC"; PASS=$((PASS+1)); else echo "  ✗ $DESC"; FAIL=$((FAIL+1)); fi; }
-
-DESC="claude/channel capability"; check grep -q '"claude/channel"' "$STDOUT_LOG"
-DESC="no tools capability";       check sh -c '! grep -q "\"tools\"" "$0"' "$STDOUT_LOG"
-
-echo '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' >&3
-sleep 0.1
-
-> "$STDOUT_LOG"
-curl -s -X POST http://127.0.0.1:$PORT/test -d 'hello' > /dev/null
-sleep 0.3
-
-DESC="webhook notification"; check grep -q 'notifications/claude/channel' "$STDOUT_LOG"
-DESC="source metadata";      check grep -q 'source.*webhook' "$STDOUT_LOG"
-
-> "$STDOUT_LOG"
-echo '{"jsonrpc":"2.0","id":2,"method":"ping","params":{}}' >&3
-sleep 0.2
-DESC="ping/pong"; check grep -q '"id":2' "$STDOUT_LOG"
-
-echo ""
-[ "$FAIL" -eq 0 ] && echo "ALL $PASS TESTS PASSED" || { echo "$PASS passed, $FAIL failed"; exit 1; }
-"""
+run = "bash scripts/mise/test.sh"
 
 [tasks.test-all]
 description = "Full integration test (all 5 sources)"
 depends = ["build", "up"]
 env = { AWS_ENDPOINT_URL = "http://localhost:4566", AWS_ACCESS_KEY_ID = "test", AWS_SECRET_ACCESS_KEY = "test", AWS_DEFAULT_REGION = "us-east-1" }
-run = """
-#!/usr/bin/env bash
-set -euo pipefail
-
-BINARY="./target/release/claude-channel"
-PORT=8799
-STDOUT_LOG="/tmp/channel-test-stdout.log"
-STDERR_LOG="/tmp/channel-test-stderr.log"
-
-cat > /tmp/test-all-config.yaml <<YAML
-server_name: "test"
-sources:
-  - type: webhook
-    port: $PORT
-    bind: "127.0.0.1"
-  - type: sqs
-    queue_url: "http://localhost:4566/000000000000/test-queue"
-    region: "us-east-1"
-    wait_seconds: 5
-  - type: redis
-    url: "redis://localhost:16379"
-    mode: pubsub
-    channels: ["test-events"]
-  - type: postgres
-    connection: "host=localhost port=15432 user=channel password=channel dbname=channel"
-    channels: ["test_notify"]
-  - type: nats
-    url: "nats://localhost:14222"
-    subjects: ["test-events"]
-YAML
-
-fuser -k $PORT/tcp 2>/dev/null || true
-
-FIFO=$(mktemp -u)
-mkfifo "$FIFO"
-"$BINARY" /tmp/test-all-config.yaml < "$FIFO" > "$STDOUT_LOG" 2>"$STDERR_LOG" &
-PID=$!
-exec 3>"$FIFO"
-
-cleanup() { exec 3>&- 2>/dev/null || true; kill $PID 2>/dev/null || true; rm -f "$FIFO" /tmp/test-all-config.yaml; }
-trap cleanup EXIT
-sleep 1
-
-# MCP handshake
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' >&3
-echo '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' >&3
-
-# Wait for all sources to connect
-for i in $(seq 1 15); do
-    READY=0
-    grep -q "Listening on http" "$STDERR_LOG" 2>/dev/null && READY=$((READY + 1))
-    grep -q "Subscribed to channel" "$STDERR_LOG" 2>/dev/null && READY=$((READY + 1))
-    grep -q "Listening on channel" "$STDERR_LOG" 2>/dev/null && READY=$((READY + 1))
-    grep -q "Polling queue" "$STDERR_LOG" 2>/dev/null && READY=$((READY + 1))
-    grep -q "nats.*Subscribed to" "$STDERR_LOG" 2>/dev/null && READY=$((READY + 1))
-    [ "$READY" -ge 5 ] && break
-    sleep 1
-done
-
-> "$STDOUT_LOG"
-
-# Send events (SQS first — longest latency)
-uvx --from awscli aws sqs send-message --endpoint-url http://localhost:4566 \
-    --queue-url http://localhost:4566/000000000000/test-queue \
-    --message-body 'sqs: test event' --region us-east-1 > /dev/null
-curl -s -X POST http://127.0.0.1:$PORT/test -d 'webhook: test event' > /dev/null
-redis-cli -p 16379 PUBLISH test-events 'redis: test event' > /dev/null
-PGPASSWORD=channel psql -h localhost -p 15432 -U channel -d channel \
-    -c "NOTIFY test_notify, 'postgres: test event'" > /dev/null
-# NATS protocol: CONNECT then PUB (text-based wire protocol)
-printf 'CONNECT {}\r\nPUB test-events 16\r\nnats: test event\r\n' | nc -q 1 localhost 14222 > /dev/null 2>&1
-
-# Wait for all events
-for i in $(seq 1 10); do
-    COUNT=$(grep -c 'notifications/claude/channel' "$STDOUT_LOG" 2>/dev/null || echo 0)
-    [ "$COUNT" -ge 5 ] && break
-    sleep 1
-done
-
-PASS=0 FAIL=0
-for source in webhook redis postgres sqs nats; do
-    if grep -q "source.*$source" "$STDOUT_LOG"; then
-        echo "  ✓ $source"
-        PASS=$((PASS + 1))
-    else
-        echo "  ✗ $source"
-        FAIL=$((FAIL + 1))
-    fi
-done
-
-echo ""
-if [ "$FAIL" -eq 0 ]; then
-    echo "ALL $PASS TESTS PASSED"
-else
-    echo "$PASS passed, $FAIL failed"
-    cat "$STDERR_LOG"
-    exit 1
-fi
-"""
+run = "bash scripts/mise/test-all.sh"
 
 [tasks.session]
 description = "Launch a Claude Code session with multi-session coordination"
 depends = ["build", "up"]
 usage = "session <name> <goal> [project-dir]"
-run = """
-#!/usr/bin/env bash
-if [ $# -lt 2 ]; then
-    echo "Usage: mise run session -- <name> <goal> [project-dir]"
-    echo ""
-    echo "Examples:"
-    echo '  mise run session -- auth-refactor "refactoring auth middleware" ~/myproject'
-    echo '  mise run session -- frontend "building the dashboard" .'
-    exit 1
-fi
-./scripts/session-start.sh "$@"
-"""
+run = "bash scripts/mise/session.sh"
 
 [tasks.sessions]
 description = "List active Claude Code sessions"
@@ -205,95 +35,18 @@ run = "./scripts/session-list.sh"
 [tasks.test-multi]
 description = "Launch 3 coordinated Claude sessions in tmux"
 depends = ["build", "up"]
-run = """
-#!/usr/bin/env bash
-set -euo pipefail
-
-BINARY=$(realpath ./target/release/claude-channel)
-redis-cli -p 16379 DEL claude:sessions > /dev/null 2>&1 || true
-
-for session in session-alpha session-beta session-gamma; do
-    mkdir -p /tmp/claude-sessions/$session
-done
-
-cat > /tmp/claude-sessions/session-alpha/config.yaml <<YAML
-server_name: "session-alpha"
-coordination:
-  url: "redis://localhost:16379"
-  goal: "working on the Rust channel binary"
-sources:
-  - type: webhook
-    port: 8801
-    bind: "127.0.0.1"
-YAML
-
-cat > /tmp/claude-sessions/session-beta/config.yaml <<YAML
-server_name: "session-beta"
-coordination:
-  url: "redis://localhost:16379"
-  goal: "writing integration tests for the API"
-sources:
-  - type: webhook
-    port: 8802
-    bind: "127.0.0.1"
-YAML
-
-cat > /tmp/claude-sessions/session-gamma/config.yaml <<YAML
-server_name: "session-gamma"
-coordination:
-  url: "redis://localhost:16379"
-  goal: "setting up CI/CD pipeline"
-sources:
-  - type: webhook
-    port: 8803
-    bind: "127.0.0.1"
-YAML
-
-for s in session-alpha session-beta session-gamma; do
-    cat > /tmp/claude-sessions/$s/mcp.json <<JSON
-{"mcpServers":{"$s":{"command":"$BINARY","args":["/tmp/claude-sessions/$s/config.yaml"]}}}
-JSON
-done
-
-tmux kill-session -t claude-multi 2>/dev/null || true
-tmux new-session -d -s claude-multi
-
-tmux send-keys -t claude-multi \
-  "claude --dangerously-load-development-channels server:session-alpha --mcp-config /tmp/claude-sessions/session-alpha/mcp.json" Enter
-
-tmux split-window -h -t claude-multi
-tmux send-keys -t claude-multi \
-  "claude --dangerously-load-development-channels server:session-beta --mcp-config /tmp/claude-sessions/session-beta/mcp.json" Enter
-
-tmux split-window -v -t claude-multi
-tmux send-keys -t claude-multi \
-  "claude --dangerously-load-development-channels server:session-gamma --mcp-config /tmp/claude-sessions/session-gamma/mcp.json" Enter
-
-echo ""
-echo "3 sessions launched in tmux."
-echo ""
-echo "  Attach:  tmux attach -t claude-multi"
-echo "  Kill:    tmux kill-session -t claude-multi"
-echo "  List:    mise run sessions"
-
+run = "bash scripts/mise/test-multi.sh"
 
 [tasks.server]
 description = "Start the channel server (TCP + dashboard)"
 depends = ["build"]
 env = { REDIS_URL = "redis://127.0.0.1:16379", TCP_PORT = "9000", DASHBOARD_PORT = "8900" }
-run = """
-echo "Server: TCP on :9000, Dashboard on http://localhost:8900"
-./target/release/claude-channel-server
-"""
+run = "./target/release/claude-channel-server"
 
 [tasks.dashboard]
 description = "Launch the web dashboard (legacy standalone mode)"
 depends = ["up"]
-run = """
-cargo build --release --features dashboard --bin claude-channel-dashboard 2>&1 | tail -1
-echo "Dashboard at http://localhost:8900"
-./target/release/claude-channel-dashboard
-"""
+run = "./target/release/claude-channel-dashboard"
 
 [tasks.generate-test-data]
 description = "Generate multi-day multi-room test data (7 rooms, 173 events, 3 days)"
@@ -327,8 +80,4 @@ run = "docker compose up -d"
 
 [tasks.clean]
 description = "Stop infrastructure and clean build artifacts"
-run = """
-docker compose -f .devcontainer/docker-compose.yml down 2>/dev/null || true
-cargo clean
-rm -rf /tmp/claude-sessions
-"""
+run = "docker compose -f .devcontainer/docker-compose.yml down 2>/dev/null || true && cargo clean && rm -rf /tmp/claude-sessions"
