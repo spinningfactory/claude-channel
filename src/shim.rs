@@ -26,11 +26,10 @@ async fn main() -> Result<()> {
         .or_else(|_| std::env::args().nth(1).ok_or(std::env::VarError::NotPresent))
         .unwrap_or_else(|_| "127.0.0.1:9000".to_string());
 
-    let session_name = std::env::var("CHANNEL_SESSION")
+    let prefix = std::env::var("CHANNEL_SESSION")
         .or_else(|_| std::env::args().nth(2).ok_or(std::env::VarError::NotPresent))
-        .unwrap_or_else(|_| {
-            format!("session-{}", std::process::id())
-        });
+        .unwrap_or_else(|_| "session".to_string());
+    let session_name = format!("{}-{}", prefix, std::process::id());
 
     eprintln!("[shim] Connecting to {} as {}", server_url, session_name);
 
