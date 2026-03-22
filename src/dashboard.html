@@ -403,7 +403,7 @@ function handleEvent(event) {
   }
 
   messages.push(event);
-  if (messages.length > 200) messages.shift();
+  if (messages.length > 2000) messages.shift();
 
   if (event.event_type === 'join') {
     sessions.set(event.from, { goal: event.body });
@@ -454,10 +454,10 @@ function renderSessions() {
 // --- Chat Feed ---
 function renderChat() {
   var el = document.getElementById('chat-messages');
-  var last50 = messages.slice(-50);
-  last50.sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+  var allMsgs = messages.slice();
+  allMsgs.sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
   el.innerHTML = '';
-  last50.forEach(function(msg) {
+  allMsgs.forEach(function(msg) {
     var div = document.createElement('div');
     div.className = 'chat-msg ' + msg.event_type;
     var time = new Date(msg.timestamp).toLocaleTimeString();
@@ -525,7 +525,7 @@ function renderSwimLane() {
 
   var filteredMsgs = messages.filter(function(m) {
     return m.event_type === 'message' || m.event_type === 'join' || m.event_type === 'leave';
-  }).slice(-40);
+  });
   filteredMsgs.sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
 
   var totalWidth = Math.max(laneMargin + seqSessions.length * laneWidth, 300);
@@ -687,7 +687,7 @@ function renderGitGraph() {
 
   var events = messages.filter(function(m) {
     return m.event_type === 'message' || m.event_type === 'join' || m.event_type === 'leave';
-  }).slice(-60);
+  });
 
   // Sort by timestamp to ensure correct ordering
   events.sort(function(a, b) {
@@ -937,7 +937,7 @@ function renderThreaded() {
 
   var events = messages.filter(function(m) {
     return m.event_type === 'message' || m.event_type === 'join' || m.event_type === 'leave';
-  }).slice(-80);
+  });
   events.sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
 
   if (events.length === 0) { view.innerHTML = ''; return; }

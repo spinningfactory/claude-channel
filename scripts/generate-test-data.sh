@@ -7,6 +7,8 @@ R="redis-cli -p $REDIS_PORT"
 # Sequence counter for sub-millisecond ordering
 SEQ=0
 GLOBAL_BUFFER=$(mktemp)
+# Use ASCII record separator (0x1E) as delimiter — cannot appear in JSON
+RS=$'\x1e'
 
 ts() {
   # Convert a datetime string to milliseconds
@@ -30,8 +32,9 @@ add_event() {
     channel "$channel" \
     payload "$payload" \
     room "$room_id" > /dev/null
-  # Buffer for global stream (inserted sorted at the end)
-  printf '%s\t%s\t%s\t%s\n' "$timestamp" "$channel" "$room_id" "$payload" >> "$GLOBAL_BUFFER"
+  # Buffer for global stream — use RS delimiter to avoid issues with
+  # spaces, tabs, or other characters in JSON payloads
+  printf '%s%s%s%s%s%s%s\n' "$timestamp" "$RS" "$channel" "$RS" "$room_id" "$RS" "$payload" >> "$GLOBAL_BUFFER"
 }
 
 join_session() {
@@ -613,7 +616,7 @@ broadcast "$ROOM" bob "I'll handle that after the post-mortem. Good catch diana.
 # --- Flush global stream (sorted by timestamp) ---
 echo "Flushing global stream (sorted)..."
 GSEQ=0
-sort -t$'\t' -k1,1n "$GLOBAL_BUFFER" | while IFS=$'\t' read -r ts channel room_id payload; do
+sort -t"$RS" -k1,1n "$GLOBAL_BUFFER" | while IFS="$RS" read -r ts channel room_id payload; do
   GSEQ=$((GSEQ + 1))
   $R XADD "claude:stream" "${ts}-${GSEQ}" \
     channel "$channel" \

@@ -291,6 +291,10 @@ description = "Generate multi-day multi-room test data (7 rooms, 173 events, 3 d
 depends = ["up"]
 run = "./scripts/generate-test-data.sh"
 
+[tasks.audit]
+description = "Audit test data in Redis for ordering and consistency issues"
+run = "python3 ./scripts/audit-test-data.py"
+
 [tasks.clean]
 description = "Stop infrastructure and clean build artifacts"
 run = """
