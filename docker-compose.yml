@@ -1,0 +1,29 @@
+services:
+  redis:
+    image: redis:7-alpine
+    # No port exposed — only the server talks to Redis
+    volumes:
+      - redis-data:/data
+    networks:
+      - claude-channel
+
+  server:
+    build: .
+    command: ["claude-channel-server"]
+    ports:
+      - "0.0.0.0:9000:9000"   # TCP for shim connections
+      - "0.0.0.0:8900:8900"   # Dashboard HTTP
+    environment:
+      REDIS_URL: redis://redis:6379
+      TCP_PORT: "9000"
+      DASHBOARD_PORT: "8900"
+    depends_on:
+      - redis
+    networks:
+      - claude-channel
+
+volumes:
+  redis-data:
+
+networks:
+  claude-channel:
